@@ -1,4 +1,7 @@
 #TODO: merge these two functions
+import x1dutils as utils
+from numpy import linspace
+from scipy.interpolate import interp1d
 
 def spectrifyCOS(tag, x1d):
     """Add spectral units (wavelength, cross dispersion distance, energy/area) 
@@ -68,7 +71,7 @@ def spectrifySTIS(tag, x1d):
 #            wvln[j] = INTERPOL(wavsoln[*,line], pixx, x[j]/fac)
 #        ENDFOR
         if Norders == 1:
-            xpix = np.linspace(0.0, Nx_tag, Nx_x1d)
+            xpix = linspace(0.0, Nx_tag, Nx_x1d)
             wavinterp = interp1d(xpix, x1d['sci'].data['wavelength'])
             yfac = Ny_tag/Ny_x1d
             extryinterp = interp1d(xpix, x1d['sci'].data['extrlocy']*yfac)

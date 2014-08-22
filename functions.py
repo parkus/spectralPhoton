@@ -338,9 +338,9 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     return signal, back, area_ratio
 
 def __bins2edges(rng, d):
-    if type(d) is float:
+    if isinstance(d, float):
         edges = __oddbin(rng, d)
-    elif type(d) is int:
+    elif isinstance(d, int):
         edges = np.linspace(rng[0], rng[1], d+1)
     elif hasattr(d, '__iter__'):
         edges = d
@@ -359,16 +359,20 @@ def __oddbin(rng, d):
     else:
         return bins
         
-def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=100.0):
-    plt.ioff() #TODO:
+def identify_continuum(wbins, y, err, function_generator, maxsig=2.0, 
+                       emission_weight=1.0, maxcull=0.99, plotsteps=False):
+    if plotsteps: plt.ioff()
     if len(wbins) != len(y):
         raise ValueError('The shape of wbins must be [len(y), 2]. These '
                          'represent the edges of the wavelength bins over which '
                          'photons were counted (or flux was integrated).')
     wbins, y, err = map(np.array, [wbins, y, err])
+    Npts = len(y)
     
-    wave = (wbins[:,0] + wbins[:,1])/2.0#TODO:
-    waveold, yold = wave, y #TODO: 
+    if plotsteps:
+        wave = (wbins[:,0] + wbins[:,1])/2.0
+        waveold, yold = wave, y
+        
     while True:
         #fit to the retained data
         f = function_generator(wbins, y, err)
@@ -379,9 +383,10 @@ def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=10
         run_edges = ((posneg[1:] - posneg[:-1]) !=0)
         Nruns = np.sum(run_edges) + 1
         
-        plt.plot(waveold, yold)
-        plt.plot(wave,expected,'k') #TODO:
-        plt.plot(wave,y,'g.') #TODO:
+        if plotsteps:
+            plt.plot(waveold, yold)
+            plt.plot(wave,expected,'k')
+            plt.plot(wave,y,'g.')
         
         #compute the PTE for the runs test
         N = len(y)
@@ -389,24 +394,27 @@ def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=10
         Nneg = N - Npos
         mu = 2*Npos*Nneg/N + 1
         var = (mu-1)*(mu-2)/(N-1)
-        PTEruns = 1 - erf(abs((Nruns - mu))/np.sqrt(2*var))
+        sigruns = abs(Nruns - mu)/np.sqrt(var)
         
         #if the fit passes the runs test, then return the good wavelengths
-        if PTEruns > minPTE:
+        if sigruns < maxsig:
             non_repeats = (wbins[:-1,1] != wbins[1:,0])
             w0, w1 = wbins[1:,0][non_repeats], wbins[:-1,1][non_repeats]
             w0, w1 = np.insert(w0, 0, wbins[0,0]), np.append(w1, wbins[-1,1])
-            plt.ion() #TODO:
             return np.array([w0,w1]).T
         else:
             #compute the chi2 PTE for each run
             iedges = np.concatenate([[0], np.nonzero(run_edges)[0]+1, [len(run_edges)+1]]) #the slice index
-            devterms = (y - expected)**2
-            devsum = np.cumsum(devterms)
-            devedges = np.insert(devsum[iedges[1:]-1], 0, 0.0)
-            devs = devedges[1:] - devedges[:-1]
-            pts_per_run = (iedges[1:] - iedges[:-1])
-            normdevs = devs/pts_per_run
+            chiterms = ((y - expected)/err)**2
+            chisum = np.cumsum(chiterms)
+            chiedges = np.insert(chisum[iedges[1:]-1], 0, 0.0)
+            chis =  chiedges[1:] - chiedges[:-1]
+            DOFs = (iedges[1:] - iedges[:-1])
+            sigs = abs(chis - DOFs)/np.sqrt(2*DOFs)
+            if emission_weight != 1.0:
+                if posneg[0] > 0: sigs[::2] = sigs[::2]*emission_weight
+                else: sigs[1::2] = sigs[1::2]*emission_weight
+            
 #            PTEs = 1.0 - gammainc(DOFs/2.0, chis/2.0)
             
             #mask out the runs with PTEs too low to be expected given the
@@ -414,15 +422,26 @@ def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=10
             #have a PTE < 10%). Always mask out at least one or we could enter
             #an infinite loop.
 #            good = (PTEs > 1.0/Nruns/1000.0)
-            meddev = np.median(normdevs)
-            good = (normdevs < 100.0*meddev)
-            if np.sum(good) == Nruns: #if none would be masked out
-                good[np.argmax(normdevs)] = False #mask out the run with the smallest PTE
-            keep = np.concatenate([[g]*d for g,d in zip(good, pts_per_run)]) #make boolean vector
-            trash = np.logical_not(keep) #TODO:
-            plt.plot(wave[trash], y[trash], 'r.') #TODO:
-            ax = plt.gca()
-            plt.text(0.8, 0.9, '{:.4f}'.format(PTEruns), transform=ax.transAxes)
-            plt.show() #TODO:
-            wave, wbins, y, err = wave[keep], wbins[keep], y[keep], err[keep] #TODO:
+#            good = (sigs < maxsig)
+#            if np.sum(good) == Nruns: #if none would be masked out
+            good = np.ones(len(y), bool)            
+            good[np.argmax(sigs)] = False #mask out the run with the smallest PTE
+            keep = np.concatenate([[g]*d for g,d in zip(good, DOFs)]) #make boolean vector
             
+            if plotsteps:
+                trash = np.logical_not(keep)
+                plt.plot(wave[trash], y[trash], 'r.') 
+                ax = plt.gca()
+                plt.text(0.8, 0.9, '{}'.format(sigruns), transform=ax.transAxes)
+                plt.show()
+                wave = wave[keep]
+            wbins, y, err = wbins[keep], y[keep], err[keep] 
+        
+        if float(len(y))/Npts < (1.0 - maxcull):
+            raise ValueError('More than maxcull={}% of the data has been '
+                             'removed, but the remaining data and associated '
+                             'fit is still not passing the Runs Test. Consider '
+                             'checking that the fits are good, relaxing '
+                             '(increasing) the maxsig condition for passing '
+                             'the Runs Test, or increasing maxcull to allow '
+                             'more data to be masked out.')
