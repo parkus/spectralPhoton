@@ -401,12 +401,12 @@ def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=10
         else:
             #compute the chi2 PTE for each run
             iedges = np.concatenate([[0], np.nonzero(run_edges)[0]+1, [len(run_edges)+1]]) #the slice index
-            chiterms = ((y - expected)/err)**2
-            chisum = np.cumsum(chiterms)
-            chiedges = np.insert(chisum[iedges[1:]-1], 0, 0.0)
-            chis =  chiedges[1:] - chiedges[:-1]
-            DOFs = (iedges[1:] - iedges[:-1])
-            sigs = abs(chis - DOFs)/np.sqrt(2*DOFs)
+            devterms = (y - expected)**2
+            devsum = np.cumsum(devterms)
+            devedges = np.insert(devsum[iedges[1:]-1], 0, 0.0)
+            devs = devedges[1:] - devedges[:-1]
+            pts_per_run = (iedges[1:] - iedges[:-1])
+            normdevs = devs/pts_per_run
 #            PTEs = 1.0 - gammainc(DOFs/2.0, chis/2.0)
             
             #mask out the runs with PTEs too low to be expected given the
@@ -414,10 +414,11 @@ def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=10
             #have a PTE < 10%). Always mask out at least one or we could enter
             #an infinite loop.
 #            good = (PTEs > 1.0/Nruns/1000.0)
-            good = (sigs < maxsig)
+            meddev = np.median(normdevs)
+            good = (normdevs < 100.0*meddev)
             if np.sum(good) == Nruns: #if none would be masked out
-                good[np.argmax(sigs)] = False #mask out the run with the smallest PTE
-            keep = np.concatenate([[g]*d for g,d in zip(good, DOFs)]) #make boolean vector
+                good[np.argmax(normdevs)] = False #mask out the run with the smallest PTE
+            keep = np.concatenate([[g]*d for g,d in zip(good, pts_per_run)]) #make boolean vector
             trash = np.logical_not(keep) #TODO:
             plt.plot(wave[trash], y[trash], 'r.') #TODO:
             ax = plt.gca()
