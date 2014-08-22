@@ -359,7 +359,7 @@ def __oddbin(rng, d):
     else:
         return bins
         
-def identify_continuum(wbins, y, err, function_generator, minPTE):
+def identify_continuum(wbins, y, err, function_generator, minPTE=0.01, maxsig=100.0):
     plt.ioff() #TODO:
     if len(wbins) != len(y):
         raise ValueError('The shape of wbins must be [len(y), 2]. These '
@@ -393,12 +393,11 @@ def identify_continuum(wbins, y, err, function_generator, minPTE):
         
         #if the fit passes the runs test, then return the good wavelengths
         if PTEruns > minPTE:
-            pdb.set_trace()
             non_repeats = (wbins[:-1,1] != wbins[1:,0])
             w0, w1 = wbins[1:,0][non_repeats], wbins[:-1,1][non_repeats]
             w0, w1 = np.insert(w0, 0, wbins[0,0]), np.append(w1, wbins[-1,1])
             plt.ion() #TODO:
-            return w0,w1
+            return np.array([w0,w1]).T
         else:
             #compute the chi2 PTE for each run
             iedges = np.concatenate([[0], np.nonzero(run_edges)[0]+1, [len(run_edges)+1]]) #the slice index
@@ -415,12 +414,13 @@ def identify_continuum(wbins, y, err, function_generator, minPTE):
             #have a PTE < 10%). Always mask out at least one or we could enter
             #an infinite loop.
 #            good = (PTEs > 1.0/Nruns/1000.0)
-            good = (sigs < 50.0)
+            good = (sigs < maxsig)
             if np.sum(good) == Nruns: #if none would be masked out
                 good[np.argmax(sigs)] = False #mask out the run with the smallest PTE
             keep = np.concatenate([[g]*d for g,d in zip(good, DOFs)]) #make boolean vector
             trash = np.logical_not(keep) #TODO:
             plt.plot(wave[trash], y[trash], 'r.') #TODO:
+            ax = plt.gca()
             plt.text(0.8, 0.9, '{:.4f}'.format(PTEruns), transform=ax.transAxes)
             plt.show() #TODO:
             wave, wbins, y, err = wave[keep], wbins[keep], y[keep], err[keep] #TODO:
