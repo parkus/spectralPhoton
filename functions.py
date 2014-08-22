@@ -10,6 +10,8 @@ import numpy as np
 import my_numpy as mynp
 import matplotlib.pyplot as plt
 import plotutils as pu
+from math import erf
+from scipy.special import gammainc
 
 #some reused error messages
 needaratio = ('If background counts are supplied, the ratio of the signal '
@@ -355,4 +357,71 @@ def __oddbin(rng, d):
     if (rng[1] - rng[0]) % d > d*0.5:
         return np.append(bins,rng[1])
     else:
-        return bins    
+        return bins
+        
+def identify_continuum(wbins, y, err, function_generator, minPTE):
+    plt.ioff() #TODO:
+    if len(wbins) != len(y):
+        raise ValueError('The shape of wbins must be [len(y), 2]. These '
+                         'represent the edges of the wavelength bins over which '
+                         'photons were counted (or flux was integrated).')
+    wbins, y, err = map(np.array, [wbins, y, err])
+    
+    wave = (wbins[:,0] + wbins[:,1])/2.0#TODO:
+    waveold, yold = wave, y #TODO: 
+    while True:
+        #fit to the retained data
+        f = function_generator(wbins, y, err)
+        
+        #count the runs
+        expected = f(wbins)
+        posneg = (y > expected)
+        run_edges = ((posneg[1:] - posneg[:-1]) !=0)
+        Nruns = np.sum(run_edges) + 1
+        
+        plt.plot(waveold, yold)
+        plt.plot(wave,expected,'k') #TODO:
+        plt.plot(wave,y,'g.') #TODO:
+        
+        #compute the PTE for the runs test
+        N = len(y)
+        Npos = np.sum(posneg)
+        Nneg = N - Npos
+        mu = 2*Npos*Nneg/N + 1
+        var = (mu-1)*(mu-2)/(N-1)
+        PTEruns = 1 - erf(abs((Nruns - mu))/np.sqrt(2*var))
+        
+        #if the fit passes the runs test, then return the good wavelengths
+        if PTEruns > minPTE:
+            pdb.set_trace()
+            non_repeats = (wbins[:-1,1] != wbins[1:,0])
+            w0, w1 = wbins[1:,0][non_repeats], wbins[:-1,1][non_repeats]
+            w0, w1 = np.insert(w0, 0, wbins[0,0]), np.append(w1, wbins[-1,1])
+            plt.ion() #TODO:
+            return w0,w1
+        else:
+            #compute the chi2 PTE for each run
+            iedges = np.concatenate([[0], np.nonzero(run_edges)[0]+1, [len(run_edges)+1]]) #the slice index
+            chiterms = ((y - expected)/err)**2
+            chisum = np.cumsum(chiterms)
+            chiedges = np.insert(chisum[iedges[1:]-1], 0, 0.0)
+            chis =  chiedges[1:] - chiedges[:-1]
+            DOFs = (iedges[1:] - iedges[:-1])
+            sigs = abs(chis - DOFs)/np.sqrt(2*DOFs)
+#            PTEs = 1.0 - gammainc(DOFs/2.0, chis/2.0)
+            
+            #mask out the runs with PTEs too low to be expected given the
+            #number of runs (e.g. if there are 10 runs, roughly one run should
+            #have a PTE < 10%). Always mask out at least one or we could enter
+            #an infinite loop.
+#            good = (PTEs > 1.0/Nruns/1000.0)
+            good = (sigs < 50.0)
+            if np.sum(good) == Nruns: #if none would be masked out
+                good[np.argmax(sigs)] = False #mask out the run with the smallest PTE
+            keep = np.concatenate([[g]*d for g,d in zip(good, DOFs)]) #make boolean vector
+            trash = np.logical_not(keep) #TODO:
+            plt.plot(wave[trash], y[trash], 'r.') #TODO:
+            plt.text(0.8, 0.9, '{:.4f}'.format(PTEruns), transform=ax.transAxes)
+            plt.show() #TODO:
+            wave, wbins, y, err = wave[keep], wbins[keep], y[keep], err[keep] #TODO:
+            
