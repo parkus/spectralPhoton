@@ -81,6 +81,8 @@ def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
 
 def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None, 
              wbins=None, dN=None, wrange=None):
+    #TODO: using DN is not providing correct results! check with G230L spectrum
+    #from ak sco and see what is going on
     """Computes a spectrum (weighted counts per wavelength) from a list of
     photons.
     
@@ -361,6 +363,11 @@ def __oddbin(rng, d):
         
 def identify_continuum(wbins, y, err, function_generator, maxsig=2.0, 
                        emission_weight=1.0, maxcull=0.99, plotsteps=False):
+    if type(plotsteps) == bool:
+        plotbelow = np.inf if plotsteps else 0.0
+    else:
+        plotbelow = plotsteps
+        plotsteps = True
     if plotsteps: plt.ioff()
     if len(wbins) != len(y):
         raise ValueError('The shape of wbins must be [len(y), 2]. These '
@@ -371,7 +378,7 @@ def identify_continuum(wbins, y, err, function_generator, maxsig=2.0,
     
     if plotsteps:
         wave = (wbins[:,0] + wbins[:,1])/2.0
-        waveold, yold = wave, y
+        wbinsin, wavein, yin= wbins, wave, y
         
     while True:
         #fit to the retained data
@@ -382,11 +389,6 @@ def identify_continuum(wbins, y, err, function_generator, maxsig=2.0,
         posneg = (y > expected)
         run_edges = ((posneg[1:] - posneg[:-1]) !=0)
         Nruns = np.sum(run_edges) + 1
-        
-        if plotsteps:
-            plt.plot(waveold, yold)
-            plt.plot(wave,expected,'k')
-            plt.plot(wave,y,'g.')
         
         #compute the PTE for the runs test
         N = len(y)
@@ -415,26 +417,20 @@ def identify_continuum(wbins, y, err, function_generator, maxsig=2.0,
                 if posneg[0] > 0: sigs[::2] = sigs[::2]*emission_weight
                 else: sigs[1::2] = sigs[1::2]*emission_weight
             
-#            PTEs = 1.0 - gammainc(DOFs/2.0, chis/2.0)
-            
-            #mask out the runs with PTEs too low to be expected given the
-            #number of runs (e.g. if there are 10 runs, roughly one run should
-            #have a PTE < 10%). Always mask out at least one or we could enter
-            #an infinite loop.
-#            good = (PTEs > 1.0/Nruns/1000.0)
-#            good = (sigs < maxsig)
-#            if np.sum(good) == Nruns: #if none would be masked out
             good = np.ones(len(y), bool)            
             good[np.argmax(sigs)] = False #mask out the run with the smallest PTE
             keep = np.concatenate([[g]*d for g,d in zip(good, DOFs)]) #make boolean vector
             
-            if plotsteps:
+            if plotsteps and (sigruns < plotbelow):
+                plt.plot(wavein, yin)
+                plt.plot(wavein,f(wbinsin),'k')
+                plt.plot(wave,y,'g.')
                 trash = np.logical_not(keep)
                 plt.plot(wave[trash], y[trash], 'r.') 
                 ax = plt.gca()
                 plt.text(0.8, 0.9, '{}'.format(sigruns), transform=ax.transAxes)
                 plt.show()
-                wave = wave[keep]
+            if plotsteps: wave = wave[keep]
             wbins, y, err = wbins[keep], y[keep], err[keep] 
         
         if float(len(y))/Npts < (1.0 - maxcull):
