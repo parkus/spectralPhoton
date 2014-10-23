@@ -1,6 +1,6 @@
 #TODO: merge these two functions
 import x1dutils as utils
-from numpy import linspace
+from numpy import linspace, random
 from scipy.interpolate import interp1d
 
 def spectrifyCOS(tag, x1d):
@@ -71,6 +71,7 @@ def spectrifySTIS(tag, x1d):
 #            wvln[j] = INTERPOL(wavsoln[*,line], pixx, x[j]/fac)
 #        ENDFOR
         if Norders == 1:
+            t.data['axis1'] += (random.random(t.data['axis1'].shape) - 0.5)
             xpix = linspace(0.0, Nx_tag, Nx_x1d)
             wavinterp = interp1d(xpix, x1d['sci'].data['wavelength'])
             yfac = Ny_tag/Ny_x1d
