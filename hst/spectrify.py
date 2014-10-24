@@ -1,16 +1,35 @@
 #TODO: merge these two functions
 import x1dutils as utils
-from numpy import linspace, random
+from numpy import random, arange, array, argmin, abs, nan, zeros, ones, floor
 from scipy.interpolate import interp1d
 
+def spectrify(tag, x1d):
+    """
+    Add spectral units to the photon table in the fits data unit "tag".
+    
+    Added vectors include wavelength, cross dispersion distance from the
+    nearest order's dispersion line, energy/area, nearest order number, and
+    data quality flags.
+    """
+    
+    utils.same_obs([tag, x1d])
+    inst = x1d[0].header['instrume']
+    if inst == 'COS':
+        spectrifyCOS(tag,x1d)
+    elif inst == 'STIS':
+        spectrifySTIS(tag,x1d)
+    else:
+        raise ValueError('Spectrify not implemented for the {} instrument.'.format(inst))
+    
 def spectrifyCOS(tag, x1d):
-    """Add spectral units (wavelength, cross dispersion distance, energy/area) 
+    """
+    Add spectral units (wavelength, cross dispersion distance, energy/area) 
     to the photon table in the fits data unit "tag".
     
     If there is more than one order, and order array is also added to specify
     which order each photon is likely associated with.
     """
-    utils.same_obs([tag, x1d])
+    #TODO: add order and dq
     segment = tag[0].header['segment'][-1]
     order = 0 if segment == 'A' else 1
     computeEperA = utils.x1d_epera_solution(x1d)
@@ -23,61 +42,67 @@ def spectrifyCOS(tag, x1d):
         tag[i] = utils.append_cols(t, ['xdisp', 'epera'], ['1E', '1E'], [xdisp, epera])
 
 def spectrifySTIS(tag, x1d):
-    """Add spectral units (wavelength, cross dispersion distance, energy/area) 
+    """
+    Add spectral units (wavelength, cross dispersion distance, energy/area) 
     to the photon table in the fits data unit "tag".
     
     If there is more than one order, and order array is also added to specify
     which order each photon is likely associated with.
     """
-    utils.same_obs([tag, x1d])
-    Norders = max(x1d['sci'].data['sporder'])
-    Nx_x1d, Ny_x1d = [x1d['primary'].header[key] for key in 
-                      ['sizaxis1','sizaxis2']]
+    xd = x1d['sci'].data
+    Norders = x1d['sci'].header['naxis2']
+    Nx_x1d, Ny_x1d = [x1d[0].header[key] for key in ['sizaxis1','sizaxis2']]
                       
     computeEperA = utils.x1d_epera_solution(x1d)
     
     for i,t in enumerate(tag):
         if t.name != 'EVENTS': continue
+        td = t.data
+        
+        #change time scale to s
+        td['time'] = td['time']*t.header['tscal1']
+        del(t.header['tscal1'])
+        
+        #add random offsets within pixel range to avoid wavelength aliasing
+        #issues from quantization
+        x = td['axis1'] + random.random(td['axis1'].shape)
+        y = td['axis2'] + random.random(td['axis2'].shape)
+        
+        #compute interpolation functions for the dispersion line y-value and 
+        #the wavelength solution for each order
         Nx_tag, Ny_tag = [t.header[key] for key in ['axlen1','axlen2']]
+        xfac, yfac = Nx_tag/Nx_x1d, Ny_tag/Ny_x1d
+        xpix = arange(1.0 + xfac/2.0, Nx_tag + 1.0, xfac)
+        interp = lambda vec: interp1d(xpix, vec, bounds_error=False, 
+                                         fill_value=nan)
+        extryinterp = map(interp, xd['extrlocy']*yfac)
+        waveinterp = map(interp, xd['wavelength'])
+        tag_x1d_x = floor((td['axis1'] - 1)/xfac).astype(int)
+        
         if Norders > 1:
-            print 'Wavelength extraction for STIS echelle gratings not yet',
-            print 'implemented.'
-            return
+            #associate each tag with an order by choosing the closest order
+            xdisp = array([y - yint(x) for yint in extryinterp])
+            line = argmin(abs(xdisp), 0)
             
-            #TODO: implement
-            #here is how you did it in IDL, for when you get around to doing it
-            #here
-#        ;Loop through all tags, associating each with a dispersion line and finding
-#        ;its wavelength.
-#        fac = Npixx/FLOAT(Nwav)
-#        FOR j = 0, Ntags[i]-1 DO BEGIN
-#            ;First, find the y-values of the disperson lines at the x location of the tag
-#            ydispl = ydisp[FLOOR(x[j]/fac),*] ;y values to the left of the tag location
-#            ydispr = ydisp[CEIL(x[j]/fac),*] ;y values to the right of the tag location
-#            ydispi = (ydispr - ydispl)*(x[j]/fac - FLOOR(x[j]/fac))+ydispl ;interpolated y values at the tag location 
-#            
-#            ;Find the dispersion line with the y value closest to the tag and the 
-#            ;distance in y of that tag from the nearest dispersion line
-#            dy = y[j] - fac*ydispi ;Hmmmm not sure about that fac
-#            yoff[j] = MIN(dy, line, /ABSOLUTE)
-#            
-#            ;Get data quality flag of the nearest pixel
-#            xadj = ROUND(x[j])
-#            xadj = xadj > 0
-#            xadj = xadj < 1023
-#            dq[j] = x1ddq[xadj, line]
-#            
-#            ;Find the associated wavelength of the tag on its dispersion line
-#            wvln[j] = INTERPOL(wavsoln[*,line], pixx, x[j]/fac)
-#        ENDFOR
+            #now get all the good stuff
+            xdisp = xdisp[line,arange(len(x))]
+            order = xd['sporder'][line]
+            #looping through lines is 20x faster than looping through tags
+            wave, dq = zeros(x.shape), zeros(x.shape, int)
+            for l in range(Norders):
+                ind = (line == l)
+                wave[ind] = waveinterp[l](x[ind])
+                dq[ind] = xd['dq'][l][tag_x1d_x[ind]]
+            epera = computeEperA(wave, order)
+            
         if Norders == 1:
-            t.data['axis1'] += (random.random(t.data['axis1'].shape) - 0.5)
-            xpix = linspace(0.0, Nx_tag, Nx_x1d)
-            wavinterp = interp1d(xpix, x1d['sci'].data['wavelength'])
-            yfac = Ny_tag/Ny_x1d
-            extryinterp = interp1d(xpix, x1d['sci'].data['extrlocy']*yfac)
-            wave = wavinterp(t.data['axis1'])
-            xdisp = (t.data['axis2'] - extryinterp(t.data['axis1']))
-            epera = computeEperA(wave[0,:])
-            tag[i] = utils.append_cols(t, ['wavelength', 'xdisp', 'epera'], 
-                                       ['1E', '1E', '1E'], [wave, xdisp, epera])
+            dq = xd['dq'][0][tag_x1d_x]
+            order = xd['sporder'][0]*ones(x.shape)
+            wave = waveinterp[0](x)
+            xdisp = (y - extryinterp[0](x))
+            epera = computeEperA(wave)
+            
+        tag[i] = utils.append_cols(t, 
+                                   ['wavelength', 'xdisp', 'epera', 'order', 'dq'], 
+                                   ['1E', '1E', '1E', '1I', '1I'], 
+                                   [wave, xdisp, epera, order, dq])

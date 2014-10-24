@@ -34,7 +34,7 @@ def wave_edges(x1d):
 
 def x1d_epera_solution(x1d):
     """Uses the x1d file to create a function that computes the energy/area
-    [erg/cm**2] for a count of a given wavelength and spectral order (row in
+    [erg/cm**2] for a count of a given wavelength and spectral line (row no. in
     the x1d arrays).
     """
     #get epera from x1d
