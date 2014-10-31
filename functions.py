@@ -93,7 +93,7 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
     User can supply one of:
     wbins = number (int), width (float), or edges (iterable) of bins
     dN = target number of signal(!) counts per bin (actual number will
-         vary due to groups of idnetically-valued points)
+         vary due to groups of identically-valued points)
     If none are supplied, the function uses Nbins=sqrt(len(w))
     
     yback = [[min0,max0], [min1,max1], ...] yvalues to be considered background

@@ -209,7 +209,22 @@ def coadd(x1ds):
     badbins = (mexptime == 0.0)
     mflux[badbins], merr[badbins] = np.nan, np.nan
     return w, mflux, merr, mexptime
-    
+
+def tagx1dlist(folder,sorted=False):
+    allfiles = os.listdir(folder)
+    obsids = [f[:9] for f in allfiles]
+    tags, x1ds = [],[]
+    for obsid in obsids:
+        tag = filter(lambda s: obsid in s, allfiles)
+        if tag == []:
+            raise ValueError('No tag files found for observation {}'.format(obsid))
+        tags.extend(tag)
+        x1d = obsid + '_x1d.fits'
+        if x1d not in allfiles:
+            raise ValueError('No x1d file found for observation {}'.format(obsid))
+        x1ds.extend([x1d]*len(tag))
+    return tags,x1ds
+
 def __getfiles(folder, suffix):
     allfiles = os.listdir(folder)
     return filter(lambda s: suffix in s, allfiles)
