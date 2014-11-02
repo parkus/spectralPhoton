@@ -33,7 +33,7 @@ def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
     if type(scalefunc) is float:
         exponent = scalefunc
         scalefunc = lambda x: x**exponent
-    if bins == None: bins = np.sqrt(len(x)/25)
+    if bins is None: bins = np.sqrt(len(x)/25)
     h = np.histogram2d(x, y, weights=eps, bins=bins)
     img = scalefunc(h[0]) if scalefunc else h[0]
     img = np.transpose(img)
@@ -50,10 +50,10 @@ def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
     """Generates spectra at set time intervals via spectrum() in
     counts/time/wavelength (unlike spectrum(), which returns counts/wavlength).
     """  
-    backsub = (tback != None)
-    weighted = (eps != None)
-    checkrng = lambda r,x: [np.nanmin(x), np.nanmax(x)] if r == None else r
-    trange, wrange = map(checkrng, [trange, wrange], [t,w])
+    backsub = (tback is not None)
+    weighted = (eps is not None)
+    checkrng = lambda r,x,b: __range(x,b) if r is None else r
+    trange, wrange = map(checkrng, [trange, wrange], [t,w], [tbins, wbins])
     tedges = __bins2edges(trange, tbins)
     
     #TODO:use a 2d histogram when not using dN for faster speed
@@ -76,7 +76,7 @@ def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
         cpsw.append(cpw/dt)
         cpswerr.append(err/dt)
     
-    if dN == None: wedges, cpsw, cpswerr = map(np.array, [wedges, cpsw, cpswerr])
+    if dN is None: wedges, cpsw, cpswerr = map(np.array, [wedges, cpsw, cpswerr])
     return tedges, wedges, cpsw, cpswerr
 
 def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None, 
@@ -108,13 +108,13 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
     epsback contains area ratio information, can be scalar
     """
     #groom input
-    if not (wbins != None or dN): wbins = np.sqrt(len(w))
-    if wrange == None: wrange = [np.nanmin(w), np.nanmax(w)]
-    if wback != None and area_ratio == None: raise ValueError(needaratio)
-    weighted = (eps != None)
+    if not (wbins is not None or dN): wbins = np.sqrt(len(w))
+    if wrange is None: wrange = __range(w, wbins)
+    if wback is not None and area_ratio is None: raise ValueError(needaratio)
+    weighted = (eps is not None)
     
     #bin counts according to wedges, Nbins, or dN
-    if wbins != None: 
+    if wbins is not None: 
         wedges = __bins2edges(wrange, wbins)
         signal = np.histogram(w, bins=wedges, range=wrange, weights=eps)[0]
         varsignal = np.histogram(w, bins=wedges, range=wrange, weights=eps**2)[0] if weighted else signal
@@ -123,7 +123,7 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
         signal, wedges = mynp.chunkogram(w, dN, weights=eps, unsorted=True)
         varsignal = mynp.chunkogram(w, dN, weights=eps, unsorted=True)[0] if weighted else signal
     
-    if wback != None:
+    if wback is not None:
         back = np.histogram(wback, wedges, weights=epsback)[0]
         varback = np.histogram(wback, wedges, weights=epsback**2)[0] if weighted else back
     else: back, varback = None, None
@@ -165,15 +165,15 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
     be careful to get the nested lists right -- i.e. for bands,yback, and tgood
     """
     #groom input
-    if tbins != None and dN:
+    if tbins is not None and dN:
         print 'Only specify tbins (time bins) or dN (count bins), but not both.'
         return
-    if not tbins != None and not dN:
+    if not tbins is not None and not dN:
         dN = 100
         print 'Using default {} point bins.'.format(dN)
-    Ncurves = len(groups) if groups != None else len(bands)
+    Ncurves = len(groups) if groups is not None else len(bands)
     
-    if bands == None: bands = [[np.nanmin(w), np.nanmax(w)]]
+    if bands is None: bands = [[np.nanmin(w), np.nanmax(w)]]
     bands = np.array(bands)
     order = np.argsort(bands, 0)[:,0]
     bands = bands[order]
@@ -183,14 +183,14 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
                'must call the function multiple times.')
         return
     
-    if trange == None: trange = [np.nanmin(t), np.nanmax(t)]
+    if trange is None: trange = __range(t,tbins)
     
-    weighted = (eps != None)
-    backsub = (tback != None)
-    if backsub and (area_ratio == None): raise ValueError(needaratio)
+    weighted = (eps is not None)
+    backsub = (tback is not None)
+    if backsub and (area_ratio is None): raise ValueError(needaratio)
         
 ##### BIN COUNTS ##############################################################
-    pts = np.array([t,w]) if eps == None else np.array([t,w,eps])
+    pts = np.array([t,w]) if eps is None else np.array([t,w,eps])
     if backsub: ptsback = np.array([tback,wback])
     if backsub and weighted: ptsback = np.vstack([ptsback, epsback])
     
@@ -198,7 +198,7 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
     def divvy(pts):
         templist = mynp.divvy(pts, wedges, keyrow=1)[::2]
         original_order = np.argsort(order)
-        if groups != None: #combine lines as specified by groups
+        if groups is not None: #combine lines as specified by groups
             def stack(c):
                 temp = np.hstack([templist[i] for i in original_order[c]])
                 return temp[:, np.argsort(temp[0])]
@@ -217,13 +217,13 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
     countsback, varback = [list(), list()] if backsub else [None, None]
 
     #all tedges are the same if using tbins bins
-    tedges = [__bins2edges(trange, tbins)]*Ncurves if tbins != None else [None]*Ncurves
+    tedges = [__bins2edges(trange, tbins)]*Ncurves if tbins is not None else [None]*Ncurves
     
     #first bin the signal counts
     for i,pts in enumerate(ptslist):
         t = pts[0,:]
         e = pts[-1,:] if weighted else None
-        if tbins != None:
+        if tbins is not None:
             sums = np.histogram(t, bins=tedges[0], weights=e)[0]
             quads = np.histogram(t, bins=tedges[0], weights=e**2)[0] if weighted else sums
         if dN:
@@ -288,7 +288,7 @@ def __count_density(xvec, signal, varsignal, back, varback, area_ratio, minvar):
     deltas = xvec[1:] - xvec[:-1]
     var = np.copy(varsignal) #if identical to signal, it was not copied earlier
     var[var == 0] = minvar
-    if back != None:
+    if back is not None:
         cps = (signal - back*area_ratio)/deltas
         err = np.sqrt(var + varback*area_ratio)/deltas
     else:
@@ -308,8 +308,8 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     """
     #join the edges into one list for use with mnp.divvy
     ys = list(ysignal)
-    if yback != None: yb = [list(b) for b in yback]
-    ybands = yb + [ys] if yback != None else [ys]
+    if yback is not None: yb = [list(b) for b in yback]
+    ybands = yb + [ys] if yback is not None else [ys]
     ybands.sort(key=lambda y: y[0])
     edges = reduce(lambda x,y:x+y, ybands)
     
@@ -329,7 +329,7 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     #divide up the counts
     div_cnts = mynp.divvy(cnts, edges, keyrow=yrow) 
     
-    if yb != None:
+    if yb is not None:
         #compute ratio of signal to background area
         area_signal = ys[1] - ys[0]
         area_back = sum([yr[1] - yr[0] for yr in yb])
@@ -361,3 +361,8 @@ def __oddbin(rng, d):
     else:
         return bins
         
+def __range(vals, bins):
+    if hasattr(bins, '__iter__'):
+        return [bins[0], bins[-1]]
+    else:
+        return [np.min(vals), np.max(vals)]

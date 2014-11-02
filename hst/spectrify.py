@@ -65,6 +65,7 @@ def spectrifySTIS(tag, x1d):
         
         #add random offsets within pixel range to avoid wavelength aliasing
         #issues from quantization
+        random.seed(0) #for reproducibility
         x = td['axis1'] + random.random(td['axis1'].shape)
         y = td['axis2'] + random.random(td['axis2'].shape)
         
@@ -77,7 +78,9 @@ def spectrifySTIS(tag, x1d):
                                          fill_value=nan)
         extryinterp = map(interp, xd['extrlocy']*yfac)
         waveinterp = map(interp, xd['wavelength'])
-        tag_x1d_x = floor((td['axis1'] - 1)/xfac).astype(int)
+        dqinterp = [interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=nan)
+                    for dq in xd['dq']]
+        
         
         if Norders > 1:
             #associate each tag with an order by choosing the closest order
@@ -92,8 +95,8 @@ def spectrifySTIS(tag, x1d):
             for l in range(Norders):
                 ind = (line == l)
                 wave[ind] = waveinterp[l](x[ind])
-                dq[ind] = xd['dq'][l][tag_x1d_x[ind]]
-            epera = computeEperA(wave, order)
+                dq[ind] = dqinterp[l](x[ind])
+            epera = computeEperA(wave, line)
             
         if Norders == 1:
             dq = xd['dq'][0][tag_x1d_x]

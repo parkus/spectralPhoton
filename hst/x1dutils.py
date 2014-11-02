@@ -212,17 +212,18 @@ def coadd(x1ds):
 
 def tagx1dlist(folder,sorted=False):
     allfiles = os.listdir(folder)
-    obsids = [f[:9] for f in allfiles]
+    tagfiles = filter(lambda s: 'tag' in s, allfiles)
+    obsids = np.unique([f[:9] for f in tagfiles])
     tags, x1ds = [],[]
     for obsid in obsids:
-        tag = filter(lambda s: obsid in s, allfiles)
+        tag = filter(lambda s: obsid in s, tagfiles)
         if tag == []:
             raise ValueError('No tag files found for observation {}'.format(obsid))
-        tags.extend(tag)
+        tags.extend([os.path.join(folder, t) for t in tag])
         x1d = obsid + '_x1d.fits'
         if x1d not in allfiles:
             raise ValueError('No x1d file found for observation {}'.format(obsid))
-        x1ds.extend([x1d]*len(tag))
+        x1ds.extend([os.path.join(folder, x1d)]*len(tag))
     return tags,x1ds
 
 def __getfiles(folder, suffix):
