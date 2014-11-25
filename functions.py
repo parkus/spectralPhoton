@@ -307,37 +307,31 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     eps = count weights
     """
     #join the edges into one list for use with mnp.divvy
-    ys = list(ysignal)
-    if yback is not None: yb = [list(b) for b in yback]
-    ybands = yb + [ys] if yback is not None else [ys]
-    ybands.sort(key=lambda y: y[0])
-    edges = reduce(lambda x,y:x+y, ybands)
+    ys = np.array(ysignal) if yback is None else np.append(ysignal, yback) 
+    args = np.argsort(ys)
+    edges = ys[args]
     
     #record signal and background positions in that list
-    isignal = edges.index(ys[0])
-    try:
-        iback = np.array([edges.index(yr[0]) for yr in yb])
-    except ValueError:
-        iback = None
+    isignal, iback = args[0], args[2::2]
     
     #check for bad input
-    edges = np.array(edges)
     if any(edges[1:] < edges[:-1]):
         raise ValueError('Signal and/or background ribbons overlap. This '
                          'does not seem wise.')
     
     #divide up the counts
     div_cnts = mynp.divvy(cnts, edges, keyrow=yrow) 
+    signal = div_cnts[isignal]
     
-    if yb is not None:
+    if yback is None:
+        return signal
+    else:
+        back = np.hstack([div_cnts[i] for i in iback])
         #compute ratio of signal to background area
         area_signal = ys[1] - ys[0]
-        area_back = sum([yr[1] - yr[0] for yr in yb])
+        area_back = np.sum(ys[3::2] - ys[2::2])
         area_ratio = float(area_signal)/area_back
-    
-    signal = div_cnts[isignal]
-    back = np.hstack([div_cnts[i] for i in iback])
-    return signal, back, area_ratio
+        return signal, back, area_ratio
 
 def __bins2edges(rng, d):
     if isinstance(d, float):

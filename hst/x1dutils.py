@@ -10,6 +10,7 @@ import os
 from scipy.interpolate import interp1d
 import my_numpy as mnp
 from math import ceil
+import re
 
 def wave_edges(x1d):
     """Reconstructs the wavelength bins used in the x1d.
@@ -123,10 +124,9 @@ def good_waverange(x1d):
     dq = x1d[1].data['dq']
     minw, maxw = [], []
     for w,d in zip(wave,dq):
-        bad = (d != 0)
-        w[bad] = np.nan
-        minw.append(np.nanmin(w))
-        maxw.append(np.nanmax(w))
+        good = (d == 0)
+        minw.append(w[good][0])
+        maxw.append(w[good][-1])
     if type(x1d) is str:
         x1d.close()
         del x1d
@@ -225,6 +225,10 @@ def tagx1dlist(folder,sorted=False):
             raise ValueError('No x1d file found for observation {}'.format(obsid))
         x1ds.extend([os.path.join(folder, x1d)]*len(tag))
     return tags,x1ds
+    
+def tag2x1d(tagname):
+    """Determine the corresponding x1d filename from  tag filename."""
+    return re.sub('_(corr)?tag_?[ab]?.fits', '_x1d.fits', tagname)
 
 def __getfiles(folder, suffix):
     allfiles = os.listdir(folder)
