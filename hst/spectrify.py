@@ -33,7 +33,7 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
     
     for i,t in enumerate(tag):
         if t.name != 'EVENTS': continue
-        td,th = t.header, t.data
+        td,th = t.data, t.header
         if traceloc == 'stsci':
             yexpected, yoff = [x1d[1].header[s+segment] for s in 
                                ['SP_LOC_','SP_OFF_']]

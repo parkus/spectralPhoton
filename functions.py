@@ -213,7 +213,7 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
         del ptsback
     
     #prep lists
-    tedges, countssignal, varsignal= list(), list(), list()
+    countssignal, varsignal= list(), list()
     countsback, varback = [list(), list()] if backsub else [None, None]
 
     #all tedges are the same if using tbins bins
@@ -345,12 +345,8 @@ def __bins2edges(rng, d):
     return edges
     
 def __oddbin(rng, d):
-    Nfull = (rng[1] - rng[0]) // d
-    temp = np.zeros(Nfull+1)
-    temp[0] = rng[0]
-    temp[1:] = d*np.ones(Nfull)
-    bins = np.cumsum(temp)
-    if (rng[1] - rng[0]) % d > d*0.5:
+    bins = np.arange(rng[0], rng[1], d)
+    if (rng[1] - bins[-1]) > d*0.5:
         return np.append(bins,rng[1])
     else:
         return bins
