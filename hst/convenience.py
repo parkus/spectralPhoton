@@ -234,7 +234,8 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
                 continue
         
             #lightcurve hdu
-            cols = [fits.Column(n,f,u,array=d) for n,u,f,d in zip(names,units,fmts,data)]
+            cols = [fits.Column(n,fm,u,array=d) for n,u,fm,d in 
+                    zip(names,units,fmts,data)]
             rec = fits.FITS_rec.from_columns(cols)
             curvehdu = fits.BinTableHDU(rec, name='lightcurve')
             if contsub:
@@ -272,7 +273,7 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
                 fmts2.extend(['E']*2)
                 units2.extend(['angstrom']*2)
     
-            cols = [fits.Column(n,f,u,array=d) for n,f,u,d in 
+            cols = [fits.Column(n,fm,u,array=d) for n,fm,u,d in 
                     zip(names2, fmts2, units2, data2)]
             rec = fits.FITS_rec.from_columns(cols)
             wavehdu = fits.BinTableHDU(rec, name='bandpasses')
@@ -493,6 +494,178 @@ def autospec(tagfiles, x1dfiles, wbins='stsci', traceloc='stsci', extrsize='stsc
         
     return tbl
 
+def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', 
+            bkoff='stsci', x1dfile=None, fitsout=None, clobber=True):
+    """
+    Creates a spectrum using the x2d file.
+    
+    Parameters
+    ----------
+    x2dfile : str
+        Path of the x2d file. 
+    traceloc : {int|'max'}, optional
+        Location of the spectral trace.
+        int : the midpoint pixel
+        'max' : use the mean y-location of the pixel with highest S/N
+    extrsize, bksize, bkoff : {int|'stsci'}, optional
+        The height of the signal extraction region, the height of the
+        background extraction regions, and the offset above and below the
+        spectral trace at which to center the background extraction regions.
+        'stsci' : use the value used by STScI in making the x1d (requires 
+            x1dfile)
+        int : user specified value in pixels
+    x1dfile : str, optional if 'stsci' is not specfied for any other keyword
+        Path of the x1d file.
+    fitsout : str
+        Path for saving a FITS file version of the spectrum.
+    clobber : {True|False}
+        Whether to overwrite the existing FITS file.
+        
+    Returns
+    -------
+    spectbl : astropy table
+        The wavelength, flux, error, and data quality flag values of the extracted
+        spectrum.
+        
+    Cautions
+    --------
+    Using a non-stsci extraction size will cause a systematic error because a
+    flux correction factor is applied that assumes the STScI extraction
+    ribbon was used.
+    
+    This still isn't as good as an x1d, mainly because the wavelength dependency
+    of the slit losses is not accounted for.
+    """
+    x2d = fits.open(x2dfile)
+    
+    #get the flux and error from the x2d
+    f,e,q = x2d['sci'].data, x2d['err'].data, x2d['dq'].data
+    
+    inst = x2d[0].header['instrume']
+    if inst != 'STIS':
+        raise NotImplementedError("This function cannot handle {} data at "
+                                  "present.".format(inst))
+    
+    #make sure x1d is available if 'stsci' is specified for anything
+    if 'stsci' in [traceloc, extrsize, bksize, bkoff]:
+        try:
+            x1d = fits.open(x1dfile)
+            xd = x1d[1].data
+        except:
+            raise ValueError("An open x1d file is needed if 'stsci' is "
+                             "specified for any of the keywords.")
+    
+    #select the trace location
+    if traceloc == 'max':
+        sn = f/e
+        sn[q > 0] = 0.0
+        sn[e <= 0.0] = 0.0
+        maxpixel = np.nanargmax(sn)
+        traceloc = np.unravel_index(maxpixel, f.shape)[0]
+    
+    #get the ribbon values
+    if extrsize == 'stsci': extrsize = np.mean(xd['extrsize'])
+    if bksize == 'stsci': bksize = np.mean([xd['bk1size'], xd['bk2size']])
+    if bkoff == 'stsci': 
+        bkoff = np.mean(np.abs([xd['bk1offst'], xd['bk2offst']]))
+    
+    #convert everything to integers so we can make slices
+    try:
+        intrnd = lambda x: int(round(x))
+        traceloc, extrsize, bksize, bkoff = map(intrnd, [traceloc, extrsize,
+                                                         bksize, bkoff])
+    except ValueError: 
+        raise ValueError("Invalid input for either traceloc, extrsize, bksize, "
+                         "or bkoff. See docstring.")
+    
+    #convert intensity to flux
+#    platescale = x2d['sci'].header['cd2_2']*3600
+#    fov_str = x2d[0].header['aper_fov']
+#    slit_width = float(fov_str.split('x')[1])
+#    fluxfac = platescale*slit_width
+    fluxfac = x2d[1].header['diff2pt']
+    f, e = f*fluxfac, e*fluxfac
+    
+    #get slices for the ribbons
+    sigslice = slice(traceloc - extrsize//2, traceloc + extrsize//2 + 1)
+    bk0slice = slice(traceloc - bkoff - bksize//2, traceloc - bkoff + bksize//2 + 1)
+    bk1slice = slice(traceloc + bkoff - bksize//2, traceloc + bkoff + bksize//2 + 1)
+    slices = [sigslice, bk0slice, bk1slice]
+    
+    #sum fluxes in each ribbon
+    fsig, fbk0, fbk1 = [np.sum(f[slc,:], 0) for slc in slices]
+    
+    #sum errors in each ribbon
+    esig, ebk0, ebk1 = [mnp.quadsum(e[slc,:], 0) for slc in slices]
+    
+    #condense dq flags in each ribbon
+    #NOTE: summing is equivalent to a bitwise or operation
+    qsig, qbk0, qbk1 = [np.sum(q[slc,:], 0) for slc in slices]
+    
+    #subtract the background 
+    area_ratio = (2*extrsize + 1)/2.0/(2*bksize + 1)
+    f1d = fsig - area_ratio*(fbk0 + fbk1)
+    e1d = np.sqrt(esig**2 + (area_ratio*ebk0)**2 + (area_ratio*ebk1)**2)
+    
+    #propagate the data quality flags
+    q1d = qsig + qbk0 + qbk1
+    
+    #construct wavelength array
+    xref, wref, dwdx = [x2d['sci'].header[s] for s in ['crpix1','crval1','cd1_1']]
+    x = np.arange(f.shape[0] + 1)
+    wedges = wref + (x - xref + 0.5)*dwdx
+    w0, w1 = wedges[:-1], wedges[1:]
+    
+    #construct exposure time array
+    expt = np.ones(f.shape[0])*x2d['sci'].header['exptime']
+    
+    #-----PUT INTO TABLE-----
+    #make data columns
+    colnames = ['w0','w1','flux','error','dq','exptime']
+    units = ['Angstrom']*2 + ['ergs/s/cm2/Angstrom']*2 + ['s']
+    descriptions = ['left (short,blue) edge of the wavelength bin',
+                    'right (long,red) edge of the wavelength bin',
+                    'average flux over the bin',
+                    'error on the flux',
+                    'data quality flags',
+                    'cumulative exposure time for the bin']
+    dataset = [w0, w1, f1d, e1d, q1d, expt]
+    cols = [Column(d,n,unit=u,description=dn) for d,n,u,dn in
+            zip(dataset, colnames, units, descriptions)]
+            
+    #make metadata dictionary
+    descriptions = {'rootname' : 'STScI identifier for the dataset used to '
+                                 'create this spectrum.'}
+    meta = {'descriptions' : descriptions,
+            'rootname' : x2d[1].header['rootname']}
+    
+    #put into table
+    tbl  = Table(cols, meta=meta)
+    
+    #-----PUT INTO FITS-----
+    if fitsout is not None:
+        #spectrum hdu
+        fmts = ['E']*4 + ['I', 'E']
+        cols = [fits.Column(n,fm,u,array=d) for n,fm,u,d in 
+                zip(colnames, fmts, units, dataset)]
+        spechdu = fits.BinTableHDU.from_columns(cols, name='spectrum')
+        
+        #make primary header
+        prihdr = fits.Header()
+        prihdr['comment'] = ('Spectrum generated from an x2d file produced by '
+                             'STScI. The dataset is identified with the header '
+                             'keywrod rootname. '
+                             'Created with spectralPhoton software '
+                             'http://github.com/parkus/spectralPhoton')
+        prihdr['date'] = strftime('%c')
+        prihdr['rootname'] = x2d[1].header['rootname']
+        prihdu = fits.PrimaryHDU(header=prihdr)
+    
+        hdulist = fits.HDUList([prihdu,spechdu])
+        hdulist.writeto(fitsout, clobber=clobber)
+        
+    return tbl
+    
 def __parsetags(tag, x1d, wr, ysignal, yback):
     #spectrify the counts and put them in an array
     spectrify(tag, x1d)
@@ -520,8 +693,9 @@ def __tinfo(tag, mjdref, dt, waste):
 
 def __ribbons(x1d, extrsize, bksize, bkoff, seg=''):
     """Get coordinates for extraction ribbons."""
-    cos, stis = __iscos(x1d), __isstis(x1d)
-    xh, xd = x1d[1].header, x1d[1].data
+    if x1d is not None:
+        cos, stis = __iscos(x1d), __isstis(x1d)
+        xh, xd = x1d[1].header, x1d[1].data
     if cos: seg = seg[-1]
     
     if extrsize == 'stsci':

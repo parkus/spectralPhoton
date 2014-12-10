@@ -5,13 +5,10 @@ Created on Thu Jun 12 16:46:40 2014
 @author: Parke
 """
 
-import pdb
 import numpy as np
 import my_numpy as mynp
 import matplotlib.pyplot as plt
 import plotutils as pu
-from math import erf
-from scipy.special import gammainc
 
 #some reused error messages
 needaratio = ('If background counts are supplied, the ratio of the signal '
@@ -30,6 +27,8 @@ def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
     for log scaling. It can also be a float, in which case pixel values will
     be exponentiated by the float.
     """
+    x, y, eps = map(__asdblary, [x, y, eps])
+    
     if type(scalefunc) is float:
         exponent = scalefunc
         scalefunc = lambda x: x**exponent
@@ -50,6 +49,9 @@ def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
     """Generates spectra at set time intervals via spectrum() in
     counts/time/wavelength (unlike spectrum(), which returns counts/wavlength).
     """  
+    t, w, tback, wback, eps, epsback = map(__asdblary, [t, w, tback, wback,
+                                                        eps, epsback])
+    
     backsub = (tback is not None)
     weighted = (eps is not None)
     checkrng = lambda r,x,b: __range(x,b) if r is None else r
@@ -108,6 +110,7 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
     epsback contains area ratio information, can be scalar
     """
     #groom input
+    w, wback, eps, epsback = map(__asdblary, [w, wback, eps, epsback])
     if not (wbins is not None or dN): wbins = np.sqrt(len(w))
     if wrange is None: wrange = __range(w, wbins)
     if wback is not None and area_ratio is None: raise ValueError(needaratio)
@@ -165,6 +168,8 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
     be careful to get the nested lists right -- i.e. for bands,yback, and tgood
     """
     #groom input
+    t, w, tback, wback, eps, epsback = map(__asdblary, [t, w, tback, wback,
+                                                        eps, epsback])
     if tbins is not None and dN:
         print 'Only specify tbins (time bins) or dN (count bins), but not both.'
         return
@@ -356,3 +361,6 @@ def __range(vals, bins):
         return [bins[0], bins[-1]]
     else:
         return [np.min(vals), np.max(vals)]
+        
+def __asdblary(ary):
+    return np.asarray(ary, 'f8') if ary is not None else None
