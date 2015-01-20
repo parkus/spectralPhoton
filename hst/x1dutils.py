@@ -8,9 +8,9 @@ from astropy.io import fits
 import numpy as np
 import os
 from scipy.interpolate import interp1d
-import my_numpy as mnp
-from math import ceil
+import mypy.my_numpy as mnp
 import re
+from mypy import specutils
 
 def wave_edges(x1d):
     """Reconstructs the wavelength bins used in the x1d.
@@ -115,23 +115,25 @@ def wave_overlap(x1dfiles):
         minwaves, maxwaves = np.max(minwaves, 0), np.min(maxwaves, 0)
         return np.array([minwaves,maxwaves]).T
 
-def good_waverange(x1d):
-    """Returns the range of good wavelengths based on the data quality flags
-    for each order in the x1d.
+def good_waverange(x1d, clipends=False):
+    """Returns the range of good wavelengths based on the x1d.
+    
+    clipends will clip off the areas at the ends of the spectra that have bad
+    dq flags.
     """
-    if type(x1d) is str: x1d = fits.open(x1d)
-    wave = x1d[1].data['wavelength'].copy()
-    dq = x1d[1].data['dq']
-    minw, maxw = [], []
-    for w,d in zip(wave,dq):
-        good = (d == 0)
-        minw.append(w[good][0])
-        maxw.append(w[good][-1])
-    if type(x1d) is str:
-        x1d.close()
-        del x1d
-    return np.array([minw,maxw]).T
-
+    xd = fits.getdata(x1d) if type(x1d) is str else x1d[1].data
+    wave = xd['wavelength']
+    if clipends:
+        dq = xd['dq']
+        minw, maxw = [], []
+        for w,d in zip(wave,dq):
+            good = (d == 0)
+            minw.append(w[good][0])
+            maxw.append(w[good][-1])
+        return np.array([minw,maxw]).T
+    else:
+        return np.array([[wave[0,0], wave[0,-1]], [wave[1,0], wave[1,-1]]])
+    
 def coadd(x1ds):
     """Coadd spectra from x1d files.
     
@@ -144,71 +146,12 @@ def coadd(x1ds):
         x1dfiles = x1ds
         x1ds = map(fits.open, x1dfiles)
     
-    #specify a master grid on which to interpolate the data
-    #get the edges, centers, and spacings for each x1d wavegrid 
     welist = map(wave_edges, x1ds)
-    welist = reduce(lambda x,y: list(x)+list(y), welist)
-    dwlist = [we[1:] - we[:-1] for we in welist]
-    wclist = map(mnp.midpts, welist)
-    wmin, wmax = np.min(welist), np.max(welist)
+    data = [[x1d[1].data[s] for s in ['flux', 'error', 'dq']] for x1d in x1ds]
+    f, e, dq = zip(*data)
+    t = [x1d[1].header['exptime'] for x1d in x1ds]
     
-    #splice the spacings and centers into big vectors
-    dw_all, wc_all = dwlist[0], wclist[0]
-    for dw, wc in zip(dwlist[1:], wclist[1:]):
-        i = np.digitize(wc, wc_all)
-        dw_all = np.insert(dw_all, i, dw)
-        wc_all = np.insert(wc_all, i, wc)
-        
-    #identify the relative maxima and make an interpolation function between them
-    _,imax = mnp.argextrema(dw_all)
-    wcint = np.hstack([[wmin],wc_all[imax],[wmax]])
-    dwint = dw_all[np.hstack([[0],imax,[-1]])]
-    dwf = interp1d(wcint, dwint)
-    
-    #construct a vector by beginning at wmin and adding the dw amount specified
-    #by the interpolation of the maxima
-    w = np.zeros(ceil((wmax-wmin)/np.min(dw)))
-    w[0] = wmin
-    n = 1
-    while True:
-        w[n] = w[n-1] + dwf(w[n-1])
-        if w[n] > wmax: break
-        n += 1
-    w = w[:n]
-    
-    #coadd the spectra (the m prefix stands for master)
-    mins, mvar, mexptime = [np.zeros(n-1)for i in range(3)]
-    #loop through each order of each x1d
-    for x1d in x1ds:
-        flux_arr, err_arr, dq_arr = [x1d[1].data[s] for s in 
-                                     ['flux', 'error', 'dq']]
-        we_arr = wave_edges(x1d)
-        exptime = x1d[1].header['exptime']
-        for flux, err, dq, we in zip(flux_arr, err_arr, dq_arr, we_arr):
-            #intergolate and add flux onto the master grid
-            dw = we[1:] - we[:-1]
-            flux, err = flux*dw, err*dw
-            wrange = [np.min(we), np.max(we)]
-            badpix = (dq != 0)
-            flux[badpix], err[badpix] = np.nan, np.nan
-            overlap = (np.digitize(w, wrange) == 1)
-            addins = exptime*mnp.rebin(w[overlap], we, flux)
-            addvar = exptime**2*mnp.rebin(w[overlap], we, err**2)
-            
-            addtime = np.ones(addins.shape)*exptime
-            badbins = np.isnan(addins)
-            addins[badbins], addvar[badbins], addtime[badbins] = 0.0, 0.0, 0.0
-            i = np.nonzero(overlap)[0][:-1]
-            mins[i] += addins
-            mvar[i] += addvar
-            mexptime[i] += addtime
-    
-    mdw = w[1:] - w[:-1]
-    mflux = mins/mexptime/mdw
-    merr = np.sqrt(mvar)/mexptime/mdw
-    badbins = (mexptime == 0.0)
-    mflux[badbins], merr[badbins] = np.nan, np.nan
-    return w, mflux, merr, mexptime
+    return specutils.coadd(welist, f, e, t, dq)
 
 def tagx1dlist(folder,sorted=False):
     allfiles = os.listdir(folder)
