@@ -6,9 +6,9 @@ Created on Thu Jun 12 16:46:40 2014
 """
 
 import numpy as np
-import my_numpy as mynp
+import mypy.my_numpy as mynp
 import matplotlib.pyplot as plt
-import plotutils as pu
+import mypy.plotutils as pu
 
 #some reused error messages
 needaratio = ('If background counts are supplied, the ratio of the signal '
@@ -338,6 +338,75 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
         area_ratio = float(area_signal)/area_back
         return signal, back, area_ratio
 
+def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
+    """Extracts counts from the signal and background regions and returns them
+    as a single array.
+    
+    Background count weights are multiplied by -ar, where ar is the ratio of
+    the signal area to the background area. This way, the weights can be used
+    with histogram for rapid binning. 
+    
+    Parameters
+    ---------
+    counts : 2D array-like
+        The counts, with each row a different dimension (e.g. time, wavelength).
+    ysignal : 1D array-like, length 2
+        [ymin,ymax] limits of signal region
+    yback : 2D array-like, size Nx2, optional
+        [[ymin0,ymax0], [ymin1,ymax1], ...] limits of background regions
+    yrow : int, optional
+        The row of counts that represents the cross-dispersion information.
+    weightrows : 1D array-like, optional
+        Rows of the counts array that represent count weights. If none, the
+        function will append a row with unity weights for all signal counts
+        and -ar weights for all background counts. Otherwise, the weights in 
+        the specified rows will be multiplied by these values.
+        
+    Returns
+    -------
+    photons : 2D array
+        The counts array with counts not in a signal or background region removed
+        and weights modified or appended as appropriate. 
+    """
+    cnts = np.copy(counts)
+    
+    #join the edges into one list
+    ys = np.array(ysignal) if yback is None else np.append(ysignal, yback) 
+    args = np.argsort(ys)
+    edges = ys[args]
+    
+    #check for bad input
+    if any(edges[1:] < edges[:-1]):
+        raise ValueError('Signal and/or background ribbons overlap. This '
+                         'does not seem wise.')
+    
+    #determine which band counts are in
+    dig = np.digitize(cnts[yrow], edges)
+    
+    #modify background count weights, if necessary
+    if yback is not None:
+        #flag the background counts
+        iback = args[2::2] + 1
+        bck = reduce(np.logical_and, [dig == i for i in iback])
+            
+        area_signal = ys[1] - ys[0]
+        area_back = np.sum(ys[3::2] - ys[2::2])
+        area_ratio = float(area_signal)/area_back
+        
+        if weightrows is None:
+            weight = np.ones([1, cnts.shape[1]])
+            weight[bck] = -area_ratio*weight[bck]
+            cnts = cnts.append(weight)
+        else:
+            for i in weightrows:
+                cnts[i, bck] = -area_ratio*cnts[i, bck]
+
+    #remove counts outside of all bands
+    keep = (dig % 2 == 1)
+    cnts = cnts[:, keep]
+    
+    return cnts
+    
 def __bins2edges(rng, d):
     if isinstance(d, float):
         edges = __oddbin(rng, d)
