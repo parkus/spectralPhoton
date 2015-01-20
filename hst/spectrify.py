@@ -1,7 +1,7 @@
 import x1dutils as utils
 from numpy import random, arange, array, argmin, abs, nan, zeros, ones, median, var, polyfit, polyval, inf
 from scipy.interpolate import interp1d
-from my_numpy import divvy, midpts
+from mypy.my_numpy import divvy, midpts
 
 def spectrify(tag, x1d, traceloc='stsci'):
     """

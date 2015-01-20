@@ -8,12 +8,12 @@ from astropy.io import fits
 import x1dutils 
 from spectrify import spectrify
 import numpy as np
-import my_numpy as mnp
+import mypy.my_numpy as mnp
 from astropy.table import Table, Column
 from os import path
 from .. import functions as sp
 from warnings import warn
-from specutils import common_grid
+from mypy.specutils import common_grid
 from time import strftime
 
 def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
@@ -57,8 +57,6 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
         (or one per band if groups == None). 
         
     """
-    #TODO: implement automatic continuum band finder
-    #TODO: implement allowing groups to span multiple cos segments
     #FIXME: make this work for g230l as well
     
     # -----GROOM INPUT-----
@@ -66,10 +64,14 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
         bands = x1dutils.wave_overlap(x1dfiles)
     bands = np.array(bands)
     if bands.ndim == 1: bands = np.reshape(bands, [len(bands)/2, 2])
-    if bands.shape[0] != 2 and bands.shape[1] == 2: bands = bands.swapaxes(0,1)
+    if bands.shape[1] != 2 and bands.shape[0] == 2: bands = bands.swapaxes(0,1)
+    
+    #divide the files into a and b lists
+    tagafiles = filter(lambda f: 'corrtag_b' not in f, tagfiles)
+    tagbfiles = filter(lambda f: 'corrtag_b' in f, tagfiles)
     
     #sort the tagfiles by exposure start time
-    tagfiles.sort(key=lambda tf: fits.getval(tf, 'expstart', ext=1))
+    tagafiles.sort(key=lambda tf: fits.getval(tf, 'expstart', ext=1))
     
     #get reference mjd
     mjdref = fits.getval(tagfiles[0], 'expstart', ext=1)
@@ -86,102 +88,110 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
     t0, t1, net, neterr, flux, fluxerr = map(list, np.empty([6,Ncurves,0]))
     
     if contsub:
-        cont, conterr, line, linerr, fitcens = map(list, np.empty([4,Ncurves,0]))
+        cont, conterr, line, linerr, fitcens = map(list, np.empty([5,Ncurves,0]))
         Nfit = contorder+1
-        fitcoeffs = list(np.empty(Ncurves,0,Nfit))
-        fitcovars = list(np.empty(Ncurves,0,Nfit**2))
+        fitcoeffs = list(np.empty([Ncurves,0,Nfit]))
+        fitcovars = list(np.empty([Ncurves,0,Nfit**2]))
     
     # -----LOOP THROUGH FILES-----
-    for i, tagfile in enumerate(tagfiles):
-        if not silent: print 'Processing tag file {} of {}'.format(i+1,len(tagfiles))
-        x1dfile = __findx1d(tagfile, x1dfiles)
+    for i, tagafile in enumerate(tagafiles):
+        if not silent: print 'Processing tag file(s) {} of {}'.format(i+1,len(tagafiles))
+        x1dfile = __findx1d(tagafile, x1dfiles)
+        tagbfile = __findtagb(tagafile, tagbfiles)
         
-        with fits.open(tagfile) as tags, fits.open(x1dfile) as x1d:        
-            insti, opteli, expi = [x1d[0].header[s] for s in 
-                                   ['instrume','opt_elem','rootname']]
-            
-            #determine which lines we can extract from the exposure
-            cos = __iscos(x1d)
-            seg = tags[0].header['segment'][-1] if cos else ''
-            wr = x1dutils.good_waverange(x1d)
-            if cos: wr = wr[0] if seg == 'FUVA' else wr[1]
-            wr = np.sort(wr.ravel())
-            leftout = (np.digitize(bands[:,0], wr) % 2 == 0)
-            rightout = (np.digitize(bands[:,1], wr) % 2 == 0)
-            badlines = np.logical_or(leftout, rightout)
-            isbadgrp = lambda g: any(badlines[g])
-            badgroups = map(isbadgrp, groups)
-            if all(badgroups):
-                print '\tNo lines/groups covered by file {}, {}'.format(i+1,tagfile)
-                continue
-            else: #might as well narrow down the wavelength range
-                goodbands = bands[np.logical_not(badlines)]
-                wr = [np.min(goodbands), np.max(goodbands)]
+        x1d = fits.open(x1dfile)
+        taga = fits.open(tagafile)
+        tagb = fits.open(tagbfile) if tagbfile else None
+        
+        cos = __iscos(x1d)
+        if tagbfile: 
+            seg = 'A+B'
+        else:
+            seg = 'A' if cos else 'n/a'
 
-            #get what we need out of the fits files
-            
-            ysignal, yback = __ribbons(x1d, extrsize, bksize, bkoff, seg)
-            t,w,f,e,tb,wb,fb,eb,ar = __parsetags(tags, x1d, wr, ysignal, yback)
-            toff, tr, tbins, mjdstart = __tinfo(tags, mjdref, dt, waste)
-            
-            #compute the line lightcurves
-            def makecurve(bands,e,eb,dt,g):
-                return sp.spectral_curves(t, w, tb, wb, bands, tbins=dt, eps=e, epsback=eb,
-                                          area_ratio=ar, trange=tr, groups=g)
-            tedges, cps, cpserr = makecurve(bands, e, eb, tbins, groups)
-            _, fx, fxerr = makecurve(bands, f, fb, tbins, groups)
+        insti, opteli, expi = [x1d[0].header[s] for s in 
+                               ['instrume','opt_elem','rootname']]
         
-            #compute continuum curves now if using dt instead of dn
-            if contsub:
-                _, cfx, cfxerr = makecurve(contbands, f, fb, tbins, None, None)
-                cfx, cfxerr = np.array(cfx).T, np.array(cfxerr).T
+        #determine which lines we can extract from the exposure
+        wr = x1dutils.good_waverange(x1d)
+        wr = np.sort(wr.ravel())
+        leftout = ~mnp.inranges(bands[:,0], wr)
+        rightout = ~mnp.inranges(bands[:,1], wr)
+        badlines = np.logical_or(leftout, rightout)
+        isbadgrp = lambda g: any(badlines[g])
+        badgroups = map(isbadgrp, groups)
+        if all(badgroups):
+            print ('\tNo lines/groups covered by exposure {}, {}'
+                   ''.format(i+1,expi))
+            continue
+        else: #might as well narrow down the wavelength range
+            goodbands = bands[np.logical_not(badlines)]
+            wr = [np.min(goodbands), np.max(goodbands)]
+
+        #get what we need out of the fits files
+        ysignal, yback = __ribbons(x1d, extrsize, bksize, bkoff, 'A')
+        cnts = __parsetags(taga, x1d, wr, ysignal, yback)
+        toff, tr, tbins, mjdstart = __tinfo(taga, mjdref, dt, waste)
+        if tagb:
+            ysignal, yback = __ribbons(x1d, extrsize, bksize, bkoff, 'B')
+            bcnts = __parsetags(tagb, x1d, wr, ysignal, yback)
+            cnts = np.hstack([cnts, bcnts])
+        t,w,f = cnts[:3]
+        e = cnts[3] if cos else None
+        
+        x1d.close()
+        taga.close()
+        if tagb: tagb.close()
+        
+        #compute the line lightcurves
+        def makecurve(bands,e,dt,g):
+            return sp.spectral_curves(t, w, bands=bands, tbins=dt, eps=e, 
+                                      trange=tr, groups=g)
+        tedges, cps, cpserr = makecurve(bands, e, tbins, groups)
+        _, fx, fxerr = makecurve(bands, f, tbins, groups)
+        if contsub:
+            _, cfx, cfxerr = makecurve(contbands, f, tbins, None)
+            cfx, cfxerr = np.array(cfx).T, np.array(cfxerr).T
+        
+        for i,g in enumerate(groups):
+            if badgroups[i]: continue
             
-            for i,g in enumerate(groups):
-                if badgroups[i]: continue
-                
-                #lightcurves
-                Npts = len(cps[i])
-                inst[i], optel[i], exp[i] = [np.append(x,[y]*Npts) for x,y in 
-                                             [[inst[i], insti], [optel[i],opteli], 
-                                              [exp[i],expi]]]
-#                if len(tags) == 2: 
-#                    seg[i] = np.append(seg[i], ['A+B']*Npts)
-#                elif len(tags) == 1:
-#                    if __iscos(x1d):
-#                        seg[i] = np.append(seg[i], [tagfiles[0][-6].upper()]*Npts)
-#                    else:
-#                        seg[i] = np.append(seg[i], ['n/a']*Npts)
-                segvec[i] = np.append(segvec[i], [seg]*Npts)
-                t0[i] = np.append(t0[i], tedges[i][:-1]+toff)
-                t1[i] = np.append(t1[i], tedges[i][1:]+toff)
-                net[i] = np.append(net[i], cps[i])
-                neterr[i] = np.append(neterr[i], cpserr[i])
-                flux[i] = np.append(flux[i], fx[i])
-                fluxerr[i] = np.append(fluxerr[i], fxerr[i])
-                
-                #continuum subtraction
-                if contsub:
-                    wmid = np.mean(bands[g])
-                    tempcf, tempcfe = np.zeros(Npts), np.zeros(Npts)
-                    coeffs = np.zeros([Npts,Nfit])
-                    covars = np.zeros([Npts,Nfit**2])
-                    for j, [c, ce] in enumerate(zip(cfx, cfxerr)):
-                        contfit = mnp.polyfit_binned(contbands - wmid, c, ce, 
-                                                     contorder)
-                        covars[j] = contfit[1].ravel()
-                        coeffs[j], fitfun = contfit[0], contfit[2]
-                        fitflux, fiterr = fitfun(bands[g] - wmid)
-                        tempcf[j] = np.sum(fitflux)
-                        tempcfe[j] = np.sqrt(np.sum(fiterr**2))
-                    fitcoeffs[i] = np.vstack([fitcoeffs[i], coeffs])
-                    fitcovars[i] = np.vstack([fitcovars[i], covars])
-                    fitcens[i] = np.append(fitcens[i], wmid*np.ones(Npts))
-                    cont[i] = np.append(cont[i], tempcf)
-                    conterr[i] = np.append(conterr[i], tempcfe)
-                    line[i] = np.append(line[i], fx[i] - tempcf)
-                    linerr[i] = np.append(linerr[i], np.sqrt(fxerr[i]**2 + 
-                                          tempcfe**2)) 
-    
+            #lightcurves
+            Npts = len(cps[i])
+            inst[i], optel[i], exp[i] = [np.append(x,[y]*Npts) for x,y in 
+                                         [[inst[i], insti], [optel[i],opteli], 
+                                          [exp[i],expi]]]
+            segvec[i] = np.append(segvec[i], [seg]*Npts)
+            t0[i] = np.append(t0[i], tedges[i][:-1]+toff)
+            t1[i] = np.append(t1[i], tedges[i][1:]+toff)
+            net[i] = np.append(net[i], cps[i])
+            neterr[i] = np.append(neterr[i], cpserr[i])
+            flux[i] = np.append(flux[i], fx[i])
+            fluxerr[i] = np.append(fluxerr[i], fxerr[i])
+            
+            #continuum subtraction
+            if contsub:
+                wmid = np.mean(bands[g])
+                tempcf, tempcfe = np.zeros(Npts), np.zeros(Npts)
+                coeffs = np.zeros([Npts,Nfit])
+                covars = np.zeros([Npts,Nfit**2])
+                for j, [c, ce] in enumerate(zip(cfx, cfxerr)):
+                    contfit = mnp.polyfit_binned(contbands - wmid, c, ce, 
+                                                 contorder)
+                    covars[j] = contfit[1].ravel()
+                    coeffs[j], fitfun = contfit[0], contfit[2]
+                    fitflux, fiterr = fitfun(bands[g] - wmid)
+                    tempcf[j] = np.sum(fitflux)
+                    tempcfe[j] = np.sqrt(np.sum(fiterr**2))
+                fitcoeffs[i] = np.vstack([fitcoeffs[i], coeffs])
+                fitcovars[i] = np.vstack([fitcovars[i], covars])
+                fitcens[i] = np.append(fitcens[i], wmid*np.ones(Npts))
+                cont[i] = np.append(cont[i], tempcf)
+                conterr[i] = np.append(conterr[i], tempcfe)
+                line[i] = np.append(line[i], fx[i] - tempcf)
+                linerr[i] = np.append(linerr[i], np.sqrt(fxerr[i]**2 + 
+                                      tempcfe**2))  
+
     # -----MAKE TABLES-----
     names = ['instrume', 'opt_elem','segment','exposure','t0','t1','cps',
              'cps err','flux','flux err']
@@ -222,7 +232,7 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
         
     # -----WRITE TO FITS-----
     if fitsout is not None:
-        fmts = ['4A','5A','3A','9A'] + ['E']*7
+        fmts = ['4A','5A','3A','9A'] + ['E']*6
         if contsub: 
             fmts.extend(['E']*5 + ['{}E'.format(Nfit), '{}E'.format(Nfit**2)])
             
@@ -579,11 +589,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
                          "or bkoff. See docstring.")
     
     #convert intensity to flux
-#    platescale = x2d['sci'].header['cd2_2']*3600
-#    fov_str = x2d[0].header['aper_fov']
-#    slit_width = float(fov_str.split('x')[1])
-#    fluxfac = platescale*slit_width
-    fluxfac = x2d[1].header['diff2pt']
+    fluxfac = extrsize*x2d['sci'].header['omegapix'] #x2d['sci'].header['diff2pt']
     f, e = f*fluxfac, e*fluxfac
     
     #get slices for the ribbons
@@ -637,7 +643,11 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
     descriptions = {'rootname' : 'STScI identifier for the dataset used to '
                                  'create this spectrum.'}
     meta = {'descriptions' : descriptions,
-            'rootname' : x2d[1].header['rootname']}
+            'rootname' : x2d[1].header['rootname'],
+            'traceloc' : traceloc,
+            'extrsize' : extrsize,
+            'bkoff' : bkoff,
+            'bksize' : bksize}
     
     #put into table
     tbl  = Table(cols, meta=meta)
@@ -648,13 +658,17 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
         fmts = ['E']*4 + ['I', 'E']
         cols = [fits.Column(n,fm,u,array=d) for n,fm,u,d in 
                 zip(colnames, fmts, units, dataset)]
-        spechdu = fits.BinTableHDU.from_columns(cols, name='spectrum')
+        del meta['descriptions']
+        spechdr = fits.Header(meta.items())
+        spechdu = fits.BinTableHDU.from_columns(cols, header=spechdr, 
+                                                name='spectrum')
         
         #make primary header
         prihdr = fits.Header()
         prihdr['comment'] = ('Spectrum generated from an x2d file produced by '
                              'STScI. The dataset is identified with the header '
-                             'keywrod rootname. '
+                             'keywrod rootname. All pixel locations refer to '
+                             'the x2d and are indexed from 0. '
                              'Created with spectralPhoton software '
                              'http://github.com/parkus/spectralPhoton')
         prihdr['date'] = strftime('%c')
@@ -669,20 +683,25 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
 def __parsetags(tag, x1d, wr, ysignal, yback):
     #spectrify the counts and put them in an array
     spectrify(tag, x1d)
+    cos = __iscos(x1d)
+    
+    #get the data from the hdus
     names = ['xdisp','time','wavelength','epera']
-    if __iscos(x1d): names.append('epsilon')
+    if cos: names.append('epsilon')
     cntsarr = lambda t: np.array([t.data[s] for s in names])
     cntslist = [cntsarr(t) for t in tag if t.name == 'EVENTS']
     cnts = np.hstack(cntslist)
-    keep = (np.digitize(cnts[2], wr) % 2 == 1)
-    cnts = cnts[:,keep]
     
-    #divide out the signal and background
-    signal, back, ar =  sp.divvy_counts(cnts, ysignal, yback)
-    t,w,f = signal[1:4]
-    tb,wb,fb = back[1:4]
-    e,eb = [signal[4], back[4]] if __iscos(x1d) else [None,None]
-    return t,w,f,e,tb,wb,fb,eb,ar
+    #get rid of superfluous counts
+    keep = mnp.inranges(cnts[2], wr)
+    cnts = cnts[:,keep]
+    if cnts.shape[1] == 0:
+        return cnts[1:]
+    
+    #squish
+    wtrows = [-1, -2] if cos else [-1]
+    cnts = sp.squish(cnts, ysignal, yback, weightrows=wtrows)
+    return cnts[1:]
         
 def __tinfo(tag, mjdref, dt, waste):
     mjdstart = tag[1].header['expstart']
@@ -691,8 +710,42 @@ def __tinfo(tag, mjdref, dt, waste):
     if not waste: dt = int(round((tr[1] - tr[0])/dt))
     return toff, tr, dt, mjdstart
 
+def stsciribbons(x1d, seg=''):
+    """
+    Get the default ribbons that stsci used for the x1d extractions, for use
+    with spectralPhoton.divvy
+    """
+    if x1d is not None:
+        cos, stis = __iscos(x1d), __isstis(x1d)
+        xh, xd = x1d[1].header, x1d[1].data
+    
+    if cos: 
+        seg = seg[-1]
+        extrsize = xh['sp_hgt_'+seg]
+        bksize = [xh['b_hgt1_'+seg], xh['b_hgt2_'+seg]]
+        ytrace = xh['sp_loc_'+seg]
+        ybk1, ybk2 = xh['b_bkg1_'+seg], xh['b_bkg2_'+seg]
+        bkoff = [ybk1-ytrace, ybk2-ytrace]
+    if stis:
+        extrsize = np.median(xd['extrsize'])
+        bksize = map(np.median, [xd['bk1size'], xd['bk2size']])
+        bkoff = map(np.median, [xd['bk1offst'], xd['bk2offst']])
+         
+    ysignal = np.array([-1.0, 1.0])*extrsize
+    if not hasattr(bkoff, '__iter__'): bkoff = [bkoff]
+    if not hasattr(bksize, '__iter__'): bkoff = [bksize]
+    
+    bksize,bkoff = map(np.array, [bksize, bkoff])
+    yback = np.array([bkoff - bksize, bkoff + bksize]).T
+    
+    if yback[0,1] > ysignal[0]: yback[0,1] = ysignal[0]
+    if yback[1,0] < ysignal[1]: yback[1,0] = ysignal[1]
+    
+    return ysignal, yback
+
 def __ribbons(x1d, extrsize, bksize, bkoff, seg=''):
     """Get coordinates for extraction ribbons."""
+    #TODO: utilize stsci ribbons to shorten, either here or in the auto funcs
     if x1d is not None:
         cos, stis = __iscos(x1d), __isstis(x1d)
         xh, xd = x1d[1].header, x1d[1].data
@@ -733,3 +786,12 @@ def __findx1d(tagfile, x1dfiles):
     else:
         raise ValueError('There is no x1d file corresponding to {} in '
                          'x1dfiles.'.format(path.basename(tagfile)))
+
+def __findtagb(tagafile, tagbfiles):
+    if 'corrtag_a' in tagafile:
+        tagbfile = tagafile.replace('corrtag_a', 'corrtag_b')
+        match = filter(lambda s: tagbfile in s, tagbfiles)
+        if len(match):
+            return match[0]
+        else:
+            return None
