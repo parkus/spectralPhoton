@@ -505,7 +505,8 @@ def autospec(tagfiles, x1dfiles, wbins='stsci', traceloc='stsci', extrsize='stsc
     return tbl
 
 def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', 
-            bkoff='stsci', x1dfile=None, fitsout=None, clobber=True):
+            bkoff='stsci', x1dfile=None, fitsout=None, clobber=True,
+            bkmask=0):
     """
     Creates a spectrum using the x2d file.
     
@@ -526,10 +527,13 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
         int : user specified value in pixels
     x1dfile : str, optional if 'stsci' is not specfied for any other keyword
         Path of the x1d file.
-    fitsout : str
+    fitsout : str, optional
         Path for saving a FITS file version of the spectrum.
-    clobber : {True|False}
+    clobber : {True|False}, optional
         Whether to overwrite the existing FITS file.
+    bkmask : int, optional
+        Data quality flags to mask the background. Background pixels that have
+        at least one of these flags will be discarded.
         
     Returns
     -------
@@ -589,7 +593,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
                          "or bkoff. See docstring.")
     
     #convert intensity to flux
-    fluxfac = extrsize*x2d['sci'].header['omegapix'] #x2d['sci'].header['diff2pt']
+    fluxfac = x2d['sci'].header['diff2pt']
     f, e = f*fluxfac, e*fluxfac
     
     #get slices for the ribbons
@@ -598,6 +602,18 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
     bk1slice = slice(traceloc + bkoff - bksize//2, traceloc + bkoff + bksize//2 + 1)
     slices = [sigslice, bk0slice, bk1slice]
     
+    #mask bad values in background regions
+    if bkmask:
+        badpix = (q & bkmask) > 0
+        badpix[sigslice] = False #but don't modify the signal region
+        f[badpix], e[badpix], q[badpix] = 0.0, 0.0, 0
+        #make a background area vector to account for masked pixels
+        goodpix = ~badpix
+        bkareas = [np.sum(goodpix[slc,:], 0) for slc in slices[1:]]
+        bkarea = sum(bkareas)
+    else:
+        bkarea = bksize*2
+        
     #sum fluxes in each ribbon
     fsig, fbk0, fbk1 = [np.sum(f[slc,:], 0) for slc in slices]
     
@@ -605,16 +621,16 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci',
     esig, ebk0, ebk1 = [mnp.quadsum(e[slc,:], 0) for slc in slices]
     
     #condense dq flags in each ribbon
-    #NOTE: summing is equivalent to a bitwise or operation
-    qsig, qbk0, qbk1 = [np.sum(q[slc,:], 0) for slc in slices]
+    bitor = lambda a: reduce(lambda x,y: x | y, a)
+    qsig, qbk0, qbk1 = [bitor(q[slc,:]) for slc in slices]
     
     #subtract the background 
-    area_ratio = (2*extrsize + 1)/2.0/(2*bksize + 1)
+    area_ratio = float(extrsize)/bkarea
     f1d = fsig - area_ratio*(fbk0 + fbk1)
     e1d = np.sqrt(esig**2 + (area_ratio*ebk0)**2 + (area_ratio*ebk1)**2)
     
     #propagate the data quality flags
-    q1d = qsig + qbk0 + qbk1
+    q1d = qsig | qbk0 | qbk1
     
     #construct wavelength array
     xref, wref, dwdx = [x2d['sci'].header[s] for s in ['crpix1','crval1','cd1_1']]
