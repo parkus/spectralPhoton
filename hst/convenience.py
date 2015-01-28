@@ -62,7 +62,7 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
     # -----GROOM INPUT-----
     if bands == 'broad':
         bands = x1dutils.wave_overlap(x1dfiles)
-    bands = np.array(bands)
+    bands = np.asarray(bands)
     if bands.ndim == 1: bands = np.reshape(bands, [len(bands)/2, 2])
     if bands.shape[1] != 2 and bands.shape[0] == 2: bands = bands.swapaxes(0,1)
     
@@ -76,7 +76,7 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None,
     #get reference mjd
     mjdref = fits.getval(tagfiles[0], 'expstart', ext=1)
     
-    if groups is None: groups = range(bands.shape[0])
+    if groups is None: groups = [range(bands.shape[0])]
     Ncurves = len(groups)
     
     contsub = (contorder is not None)

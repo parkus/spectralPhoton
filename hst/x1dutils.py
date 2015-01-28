@@ -132,7 +132,7 @@ def good_waverange(x1d, clipends=False):
             maxw.append(w[good][-1])
         return np.array([minw,maxw]).T
     else:
-        return np.array([[wave[0,0], wave[0,-1]], [wave[1,0], wave[1,-1]]])
+        return np.array([w[[0,-1]] for w in wave])
     
 def coadd(x1ds):
     """Coadd spectra from x1d files.
