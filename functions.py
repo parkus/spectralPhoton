@@ -9,6 +9,7 @@ import numpy as np
 import mypy.my_numpy as mynp
 import matplotlib.pyplot as plt
 import mypy.plotutils as pu
+from math import log10
 
 #some reused error messages
 needaratio = ('If background counts are supplied, the ratio of the signal '
@@ -22,25 +23,57 @@ def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
     25 counts in a perfectly flat image (S/N = 5)
     otherwise bins behaves as in numpy.histrogram2d
     
-    scalefunc is a function to scale the image, such as
-    scalefunc = lambda x: np.log10(x)
-    for log scaling. It can also be a float, in which case pixel values will
-    be exponentiated by the float.
-    """
-    x, y, eps = map(__asdblary, [x, y, eps])
+    Parameters
+    ----------
+    x : 1d array-like
+        x coordinates of the counts
+    y : 1d array-like
+        y coordinates of the counts
+    eps : 1d array-like, optional
+        weights of the counts
+    bins : int or [int, int] or array_like or [array, array], optional
+        The bin specification:
+            - If int, the number of bins for the two dimensions (nx=ny=bins).
+            - If [int, int], the number of bins in each dimension (nx, ny = bins).
+            - If array_like, the bin edges for the two dimensions (x_edges=y_edges=bins).
+            - If [array, array], the bin edges in each dimension (x_edges, y_edges = bins).
+    scalefunc : {function|float|'auto'}
+        Scale function to apply to the histogrammed count values:
+            - If function, the count values are passed as an argument and the
+                result is used to create the image. E.g.:
+                scalefunc = lambda x: np.log10(x)
+            - If float, count values will be exponetiated by float before
+                creating image.
+            - If 'auto', an exponent will be chosen that scales the median
+                pixel count to 2. So if the median count is 4, the image will
+                be scaled by the exponent 0.5. 
     
+    Returns
+    -------
+    p : object
+        Handle for the image plot.
+    """
+    #histogram
+    x, y, eps = map(__asdblary, [x, y, eps])
+    if bins is None: bins = np.sqrt(len(x)/25)
+    h = np.histogram2d(x, y, weights=eps, bins=bins)
+    
+    #scale, if desired
+    if scalefunc == 'auto':
+        med = np.nanmedian(h[0])
+        scalefunc = log10(2)/log10(med)
     if type(scalefunc) is float:
         exponent = scalefunc
         scalefunc = lambda x: x**exponent
-    if bins is None: bins = np.sqrt(len(x)/25)
-    h = np.histogram2d(x, y, weights=eps, bins=bins)
     img = scalefunc(h[0]) if scalefunc else h[0]
     img = np.transpose(img)
+    
+    #create image
     x, y = mynp.midpts(h[1]), mynp.midpts(h[2])
     p = pu.pcolor_reg(x, y, img, **kw)
     plt.xlim(np.nanmin(h[1]), np.nanmax(h[1]))
     plt.ylim(np.nanmin(h[2]), np.nanmax(h[2]))
-    del(h,img)
+    
     return p
 
 def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None, 
