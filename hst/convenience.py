@@ -725,7 +725,9 @@ def __tinfo(tag, mjdref, dt, waste):
     mjdstart = tag[1].header['expstart']
     toff = 86400.0*(mjdstart - mjdref)
     tr = [tag[2].data[k][0] for k in ['start','stop']]
-    if not waste: dt = int(round((tr[1] - tr[0])/dt))
+    if not waste:
+        dt = int(round((tr[1] - tr[0])/dt))
+        if dt == 0: dt = 1
     return toff, tr, dt, mjdstart
 
 def stsciribbons(x1d, seg=''):
