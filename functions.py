@@ -18,11 +18,11 @@ needaratio = ('If background counts are supplied, the ratio of the signal '
 
 def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
     """Displays an image of the counts.
-    
+
     bins=None results in bins=sqrt(len(x)/25) such that each bin would have
     25 counts in a perfectly flat image (S/N = 5)
     otherwise bins behaves as in numpy.histrogram2d
-    
+
     Parameters
     ----------
     x : 1d array-like
@@ -44,10 +44,10 @@ def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
                 scalefunc = lambda x: np.log10(x)
             - If float, count values will be exponetiated by float before
                 creating image.
-            - If 'auto', an exponent will be chosen that scales the median
-                pixel count to 2. So if the median count is 4, the image will
-                be scaled by the exponent 0.5. 
-    
+            - If 'auto', the image will be scaled by the histogram, such
+                that prevalent pixel values are highlighted.
+        Keywords to be passed to the matplotlib.pyplot.imshow function.
+
     Returns
     -------
     p : object
@@ -57,47 +57,53 @@ def image(x, y, eps=None, bins=None, scalefunc=None, **kw):
     x, y, eps = map(__asdblary, [x, y, eps])
     if bins is None: bins = np.sqrt(len(x)/25)
     h = np.histogram2d(x, y, weights=eps, bins=bins)
-    
+
     #scale, if desired
     if scalefunc == 'auto':
-        med = np.nanmedian(h[0])
-        scalefunc = log10(2)/log10(med)
+        bins = np.arange(np.max(h[0]) + 2)
+        h1 = np.histogram(h[0], bins)[0]
+        sums = np.append([0.0], np.cumsum(h1[1:]))
+        scalepts = sums.astype(float)/sums[-1]
+        def scalefunc(arr):
+            i = arr.astype(int)
+            vals = scalepts[i.flatten()]
+            return np.reshape(vals, arr.shape)
     if type(scalefunc) is float:
         exponent = scalefunc
         scalefunc = lambda x: x**exponent
     img = scalefunc(h[0]) if scalefunc else h[0]
     img = np.transpose(img)
-    
+
     #create image
     x, y = mynp.midpts(h[1]), mynp.midpts(h[2])
     p = pu.pcolor_reg(x, y, img, **kw)
     plt.xlim(np.nanmin(h[1]), np.nanmax(h[1]))
     plt.ylim(np.nanmin(h[2]), np.nanmax(h[2]))
-    
+
     return p
 
-def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None, 
-                    area_ratio=None, tbins=None, dN=None, wbins=None, trange=None, 
+def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
+                    area_ratio=None, tbins=None, dN=None, wbins=None, trange=None,
                     wrange=None):
     """Generates spectra at set time intervals via spectrum() in
     counts/time/wavelength (unlike spectrum(), which returns counts/wavlength).
-    """  
+    """
     t, w, tback, wback, eps, epsback = map(__asdblary, [t, w, tback, wback,
                                                         eps, epsback])
-    
+
     backsub = (tback is not None)
     weighted = (eps is not None)
     checkrng = lambda r,x,b: __range(x,b) if r is None else r
     trange, wrange = map(checkrng, [trange, wrange], [t,w], [tbins, wbins])
     tedges = __bins2edges(trange, tbins)
-    
+
     #TODO:use a 2d histogram when not using dN for faster speed
     pts = [t,w,eps] if weighted else [t,w]
     div = mynp.divvy(np.array(pts), tedges)
-    if backsub: 
+    if backsub:
         ptsback = [tback, wback, epsback] if weighted else [tback, wback]
         divback = mynp.divvy(np.array(ptsback), tedges)
-    
+
     wedges, cpsw, cpswerr = [], [], []
     for i in range(len(div)):
         w = div[i][1,:]
@@ -110,36 +116,36 @@ def spectrum_frames(t, w, tback=None, wback=None, eps=None, epsback=None,
         wedges.append(we)
         cpsw.append(cpw/dt)
         cpswerr.append(err/dt)
-    
+
     if dN is None: wedges, cpsw, cpswerr = map(np.array, [wedges, cpsw, cpswerr])
     return tedges, wedges, cpsw, cpswerr
 
-def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None, 
+def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
              wbins=None, dN=None, wrange=None):
     #TODO: using DN is not providing correct results! check with G230L spectrum
     #from ak sco and see what is going on
     """Computes a spectrum (weighted counts per wavelength) from a list of
     photons.
-    
+
     w = event wavelengths
     y = event cross dispersion location (option, required with ysignal and yback)
     eps = event weights
-    
+
     User can supply one of:
     wbins = number (int), width (float), or edges (iterable) of bins
     dN = target number of signal(!) counts per bin (actual number will
          vary due to groups of identically-valued points)
     If none are supplied, the function uses Nbins=sqrt(len(w))
-    
+
     yback = [[min0,max0], [min1,max1], ...] yvalues to be considered background
             counts
-    
+
     wrange = [min,max] wavelengths to consider -- saves the computation time of
             determining min and max from the w vector
-    
+
     Returns [wedges, cpw, cpw_err]: the edges of the wavelength bins, counts
     per wavelength for each bin, and the Poisson error
-    
+
     epsback contains area ratio information, can be scalar
     """
     #groom input
@@ -148,9 +154,9 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
     if wrange is None: wrange = __range(w, wbins)
     if wback is not None and area_ratio is None: raise ValueError(needaratio)
     weighted = (eps is not None)
-    
+
     #bin counts according to wedges, Nbins, or dN
-    if wbins is not None: 
+    if wbins is not None:
         wedges = __bins2edges(wrange, wbins)
         signal = np.histogram(w, bins=wedges, range=wrange, weights=eps)[0]
         varsignal = np.histogram(w, bins=wedges, range=wrange, weights=eps**2)[0] if weighted else signal
@@ -158,23 +164,23 @@ def spectrum(w, wback=None, eps=None, epsback=None, area_ratio=None,
         w = np.concatenate([[wrange[0]], w, [wrange[1]]])
         signal, wedges = mynp.chunkogram(w, dN, weights=eps, unsorted=True)
         varsignal = mynp.chunkogram(w, dN, weights=eps, unsorted=True)[0] if weighted else signal
-    
+
     if wback is not None:
         back = np.histogram(wback, wedges, weights=epsback)[0]
         varback = np.histogram(wback, wedges, weights=epsback**2)[0] if weighted else back
     else: back, varback = None, None
-        
+
     #compute count density
     minvar = np.nanmin(eps)**2 if weighted else 1.0
     cpw, cpw_err = __count_density(wedges, signal, varsignal, back, varback,
                                   area_ratio, minvar)
-    
+
     return wedges, cpw, cpw_err
-    
-def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=None, 
+
+def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=None,
                     eps=None, epsback=None, area_ratio=None, trange=None, groups=None):
     """Makes lightcurves from a photon list in the specified spectral bands.
-    
+
     t = event times in s
     w = event wavelengths
     y = event distance from spectrum midline (can be set to None and is ignored
@@ -186,14 +192,14 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
     tbins = number (int), width (float), or edges (iterable) of time bins
     trange = start and end times of the exposure (optional, assumed to be the
     time of the first and last photon if not supplied)
-    groups = 2D list/array of integers specifying how lines should be combined, e.g. 
+    groups = 2D list/array of integers specifying how lines should be combined, e.g.
     [[0,3],[1,2,4]] would produce two light curves, the first combining counts
-    from the first and fourth bands, and the second from the second, third, 
+    from the first and fourth bands, and the second from the second, third,
     and fifth.
-    
+
     dN and tbins cannot both be used - the bins must either be constructed from
-    set numbers of events or from set time steps 
-    
+    set numbers of events or from set time steps
+
     returns [tstart, tend, cpt, cpt_err]: the start time of the bins,
     end time of the bins, the (weighted) count rate and the Poisson error
     notes:
@@ -210,7 +216,7 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
         dN = 100
         print 'Using default {} point bins.'.format(dN)
     Ncurves = len(groups) if groups is not None else len(bands)
-    
+
     if bands is None: bands = [[np.nanmin(w), np.nanmax(w)]]
     bands = np.array(bands)
     order = np.argsort(bands, 0)[:,0]
@@ -220,18 +226,18 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
         print ('Wavelength bands cannot overlap. For overlapping bands, you '
                'must call the function multiple times.')
         return
-    
+
     if trange is None: trange = __range(t,tbins)
-    
+
     weighted = (eps is not None)
     backsub = (tback is not None)
     if backsub and (area_ratio is None): raise ValueError(needaratio)
-        
+
 ##### BIN COUNTS ##############################################################
     pts = np.array([t,w]) if eps is None else np.array([t,w,eps])
     if backsub: ptsback = np.array([tback,wback])
     if backsub and weighted: ptsback = np.vstack([ptsback, epsback])
-    
+
     # divide up points into wavelength bands (discard between pts via ::2)
     def divvy(pts):
         templist = mynp.divvy(pts, wedges, keyrow=1)[::2]
@@ -246,17 +252,17 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
         return ptslist
     ptslist = divvy(pts)
     del pts
-    if backsub: 
+    if backsub:
         ptsbacklist = divvy(ptsback)
         del ptsback
-    
+
     #prep lists
     countssignal, varsignal= list(), list()
     countsback, varback = [list(), list()] if backsub else [None, None]
 
     #all tedges are the same if using tbins bins
     tedges = [__bins2edges(trange, tbins)]*Ncurves if tbins is not None else [None]*Ncurves
-    
+
     #first bin the signal counts
     for i,pts in enumerate(ptslist):
         t = pts[0,:]
@@ -276,7 +282,7 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
                 t0, t1 = (trange[0] - dt0), (trange[1] + dt1)
                 text = np.insert(t, [0,len(t)], [t0,t1])
                 te = mynp.chunk_edges(text, dN)
-                
+
                 #append the last odd chunk if necessary
                 if te[-1] < t[-1]:
                     Nchunks = len(te)
@@ -290,15 +296,15 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
                     Nchunks = len(te)-1
                     sums, quads = np.zeros(Nchunks), np.zeros(Nchunks)
                     regchunks = np.arange(Nchunks)
-                    
+
                 #count up the signal photons
                 tedges[i] = te
                 sums[regchunks] = mynp.chunk_sum(e, dN) if weighted else float(dN)
                 quads[regchunks] = mynp.chunk_sum(e**2, dN) if weighted else float(dN)
-            
+
         countssignal.append(sums)
         varsignal.append(quads)
-        
+
     #now the background counts
     if backsub:
         for pts, te in zip(ptsbacklist, tedges):
@@ -310,18 +316,18 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
             varback.append(quads)
     else:
         countsback, varback = [[None]*Ncurves]*2
-        
+
     #compute the count rates
     cps, cps_err = [], []
     minvar = np.min(eps[eps > 0.0])**2 if weighted else 1.0
     for i in range(Ncurves):
-        result = __count_density(tedges[i], countssignal[i], varsignal[i], 
+        result = __count_density(tedges[i], countssignal[i], varsignal[i],
                                  countsback[i], varback[i], area_ratio, minvar)
         cps.append(result[0])
         cps_err.append(result[1])
-    
+
     return tedges,cps,cps_err
-    
+
 def __count_density(xvec, signal, varsignal, back, varback, area_ratio, minvar):
     deltas = xvec[1:] - xvec[:-1]
     var = np.copy(varsignal) #if identical to signal, it was not copied earlier
@@ -333,52 +339,44 @@ def __count_density(xvec, signal, varsignal, back, varback, area_ratio, minvar):
         cps = signal/deltas
         err = np.sqrt(var)/deltas
     return cps, err
-    
+
 def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     """Divvies up the signal and backgroudn counts in the cnts array according
     to their y-values (y-values assumed to be in first row of array).
-    
+
     cnts = array of counts with each row a different dimension (time,
-           wavelength, etc)    
+           wavelength, etc)
     ysignal = [ymin,ymax] limits of signal region
     yback = [[ymin0,ymax0], [ymin1,ymax1], ...] limits of background regions
     eps = count weights
     """
     #join the edges into one list for use with mnp.divvy
-    ys = np.array(ysignal) if yback is None else np.append(ysignal, yback) 
-    args = np.argsort(ys)
-    edges = ys[args]
-    
-    #record signal and background positions in that list
-    isignal, iback = args[0], args[2::2]
-    
+    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
+
     #check for bad input
     if any(edges[1:] < edges[:-1]):
         raise ValueError('Signal and/or background ribbons overlap. This '
                          'does not seem wise.')
-    
+
     #divide up the counts
-    div_cnts = mynp.divvy(cnts, edges, keyrow=yrow) 
+    div_cnts = mynp.divvy(cnts, edges, keyrow=yrow)
     signal = div_cnts[isignal]
-    
+
     if yback is None:
         return signal
     else:
         back = np.hstack([div_cnts[i] for i in iback])
-        #compute ratio of signal to background area
-        area_signal = ys[1] - ys[0]
-        area_back = np.sum(ys[3::2] - ys[2::2])
-        area_ratio = float(area_signal)/area_back
+
         return signal, back, area_ratio
 
 def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     """Extracts counts from the signal and background regions and returns them
     as a single array.
-    
+
     Background count weights are multiplied by -ar, where ar is the ratio of
     the signal area to the background area. This way, the weights can be used
-    with histogram for rapid binning. 
-    
+    with histogram for rapid binning.
+
     Parameters
     ---------
     counts : 2D array-like
@@ -392,40 +390,33 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     weightrows : 1D array-like, optional
         Rows of the counts array that represent count weights. If none, the
         function will append a row with unity weights for all signal counts
-        and -ar weights for all background counts. Otherwise, the weights in 
+        and -ar weights for all background counts. Otherwise, the weights in
         the specified rows will be multiplied by these values.
-        
+
     Returns
     -------
     photons : 2D array
         The counts array with counts not in a signal or background region removed
-        and weights modified or appended as appropriate. 
+        and weights modified or appended as appropriate.
     """
     cnts = np.copy(counts)
-    
-    #join the edges into one list
-    ys = np.array(ysignal) if yback is None else np.append(ysignal, yback) 
-    args = np.argsort(ys)
-    edges = ys[args]
-    
+
+    #join the edges into one list for use with mnp.divvy
+    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
+
     #check for bad input
     if any(edges[1:] < edges[:-1]):
         raise ValueError('Signal and/or background ribbons overlap. This '
                          'does not seem wise.')
-    
+
     #determine which band counts are in
-    dig = np.digitize(cnts[yrow], edges)
-    
+    ii = np.searchsorted(edges, cnts[yrow])
+
     #modify background count weights, if necessary
     if yback is not None:
         #flag the background counts
-        iback = args[2::2] + 1
-        bck = reduce(np.logical_and, [dig == i for i in iback])
-            
-        area_signal = ys[1] - ys[0]
-        area_back = np.sum(ys[3::2] - ys[2::2])
-        area_ratio = float(area_signal)/area_back
-        
+        bck = reduce(np.logical_or, [ii == i for i in iback])
+
         if weightrows is None:
             weight = np.ones([1, cnts.shape[1]])
             weight[bck] = -area_ratio*weight[bck]
@@ -435,11 +426,34 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
                 cnts[i, bck] = -area_ratio*cnts[i, bck]
 
     #remove counts outside of all bands
-    keep = (dig % 2 == 1)
+    sig = reduce(np.logical_or, [ii == i for i in isignal])
+    keep = sig | bck
     cnts = cnts[:, keep]
-    
+
     return cnts
-    
+
+def __form_edges(ysignal, yback):
+    # join the edges into one list
+    ys = np.array(ysignal) if yback is None else np.append(ysignal, yback)
+    edges = np.unique(ys)
+
+    # find where signal band is in sorted edges
+    isignal = np.searchsorted(edges, mynp.midpts(ysignal))
+
+    if yback is not None:
+        # find area ratio of signal to background
+        area_signal = ysignal[1] - ysignal[0]
+        area_back = np.sum(np.diff(yback, axis=1))
+        area_ratio = float(area_signal)/area_back
+
+        # find where background bands are in the sorted edges
+        yback_mids = np.squeeze(mynp.midpts(yback, axis=1))
+        iback = np.searchsorted(edges, yback_mids)
+    else:
+        iback, area_ratio = None, None
+
+    return edges, isignal, iback, area_ratio
+
 def __bins2edges(rng, d):
     if isinstance(d, float):
         edges = __oddbin(rng, d)
@@ -450,19 +464,19 @@ def __bins2edges(rng, d):
     else:
         raise ValueError('Input bin must be either an integer, float, or iterable.')
     return edges
-    
+
 def __oddbin(rng, d):
     bins = np.arange(rng[0], rng[1], d)
     if (rng[1] - bins[-1]) > d*0.5:
         return np.append(bins,rng[1])
     else:
         return bins
-        
+
 def __range(vals, bins):
     if hasattr(bins, '__iter__'):
         return [bins[0], bins[-1]]
     else:
         return [np.min(vals), np.max(vals)]
-        
+
 def __asdblary(ary):
     return np.asarray(ary, 'f8') if ary is not None else None
