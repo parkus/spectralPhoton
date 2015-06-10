@@ -422,18 +422,26 @@ def autospec(tagfiles, x1dfiles, wbins='stsci', traceloc='stsci', extrsize='stsc
     N = len(wbins) - 1
     exptbinned = np.zeros(N)
     for exptime, we in zip(exptimes, welist):
-        #deal with fractional end bins by multiplying the endtime by that
-        #fraction
-        edgesin = mnp.inranges(wbins, we[[0,-1]])
-        binsin = np.logical_and(edgesin[:-1], edgesin[1:])
-        exptvec = np.zeros(N)
-        exptvec[binsin] = exptime
-        i0,i1 = np.nonzero(binsin)[0][[0,-1]] #the two end bins fully within we
-        frac0 = (wbins[i0] - we[0])/dw[i0-1]
-        frac1 = (we[-1] - wbins[i1+1])/dw[i1+1]
-        exptvec[i0-1] = frac0*exptime
-        exptvec[i1+1] = frac1*exptime
-        exptbinned += exptvec
+        # pull out all we that at least partially overlap wbins
+        add_in = mnp.binoverlap(wbins, we, 'loose')
+        arg_in, = np.nonzero(add_in)
+        arg_in = np.append(arg_in, arg_in[-1] + 1)
+        add_we = we[arg_in].astype('f8')
+        Nin = len(add_we)
+
+        # create exposure time vector for those bins
+        add_expt = np.array([exptime] * (Nin-1), 'f8')
+
+        # add dummy 0.0 exptime bins on both ends
+        add_we = np.insert(add_we, [0, Nin], [0.0, wbins[-1] + 1.0])
+        add_expt = np.insert(add_expt, [0, Nin-1], [0.0, 0.0])
+
+        # rebin to wbins. wbins outside of we will just get 0.0 because of
+        # the dummy zeros we padded with
+        add_expt = mnp.rebin(wbins, add_we, add_expt, 'avg')
+
+        # add the result
+        exptbinned += add_expt
 
     #make spectra
     wbins, cpw, cpw_err = sp.spectrum(w, wb, e, eb, 1.0, wbins, wrange=wrange) #counts/AA
