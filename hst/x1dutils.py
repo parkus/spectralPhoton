@@ -14,7 +14,7 @@ from mypy import specutils
 
 def wave_edges(x1d):
     """Reconstructs the wavelength bins used in the x1d.
-    
+
     Assumes a linear change in the wavelength step."""
     if type(x1d) is str: x1d = fits.open(x1d)
     ws = x1d[1].data['wavelength']
@@ -26,7 +26,7 @@ def wave_edges(x1d):
         dw1 = (w[-1] -w[-2])
         dwslope = (dw1 - dw0)/Npts
         dw00 = -0.5*dwslope + dw0
-        
+
         e = np.zeros(Npts+1)
         e[0] = w[0] - dw00/2.0
         for i in np.arange(1,Npts+1): e[i] = 2*w[i-1] - e[i-1]
@@ -47,18 +47,18 @@ def x1d_epera_solution(x1d):
     flux, cps, dwave, wave = map(list, [flux, cps, dwave, wave])
     for i in range(len(flux)):
         keep = (cps[i] != 0)
-        flux[i], cps[i], dwave[i], wave[i] = [v[keep] for v in 
+        flux[i], cps[i], dwave[i], wave[i] = [v[keep] for v in
                                               [flux[i],cps[i],dwave[i], wave[i]]]
     EperAperCount = [f/c*d for f,c,d in zip(flux,cps,dwave)]
-    
+
     #make an inerpolation function for each order
     intps = [interp1d(w,E,bounds_error=False) for w,E in zip(wave,EperAperCount)]
-    
+
     #the function to be returned. it chooses the proper interpolation function
     #based on the orders of the input counts, then uses it to get epera from
     #wavelength
     def f(waves, orders=0):
-        if type(orders) == int: 
+        if type(orders) == int:
             eperas = intps[orders](waves)
         else:
             eperas = np.zeros(waves.shape)
@@ -66,7 +66,7 @@ def x1d_epera_solution(x1d):
                 pts = (orders == i)
                 eperas[pts] = intps[i](waves[pts])
         return eperas
-    
+
     return f
 
 def same_obs(hdus):
@@ -89,22 +89,22 @@ def append_cols(tblhdu, names, formats, arrays):
     rec = fits.FITS_rec.from_columns(cols)
     return fits.BinTableHDU(rec, name=tblhdu.name, header=tblhdu.header)
 
-def wave_overlap(x1dfiles):
-    """Returns the overlapping range of wavelengths for each order (or segment) 
+def wave_overlap(x1dfiles, clipends=True):
+    """Returns the overlapping range of wavelengths for each order (or segment)
     of the spectra in a set of x1d files.
     """
     if type(x1dfiles) == str: x1dfiles = __getfiles(x1dfiles, 'x1d')
-    
-    #function to read min an max good wavelengths from files 
+
+    #function to read min an max good wavelengths from files
     minwaves, maxwaves = [], []
     for x1dfile in x1dfiles:
         x1d = fits.open(x1dfile)
-        rngs = good_waverange(x1d)
+        rngs = good_waverange(x1d, clipends=clipends)
         minwaves.append(rngs[:,0])
         maxwaves.append(rngs[:,1])
         x1d.close()
         del x1d
-    
+
     orders = map(len, minwaves)
     if orders.count(orders[0]) < len(orders):
         raise ValueError('All spectral data must contain the same number of '
@@ -117,7 +117,7 @@ def wave_overlap(x1dfiles):
 
 def good_waverange(x1d, clipends=False):
     """Returns the range of good wavelengths based on the x1d.
-    
+
     clipends will clip off the areas at the ends of the spectra that have bad
     dq flags.
     """
@@ -133,24 +133,24 @@ def good_waverange(x1d, clipends=False):
         return np.array([minw,maxw]).T
     else:
         return np.array([w[[0,-1]] for w in wave])
-    
+
 def coadd(x1ds):
     """Coadd spectra from x1d files.
-    
+
     Do this in a "union" sense, keeping all data -- not just the data where the
     spectra overlap. Data that only partially covers a wavelength bin is not
     included in that bin.
     """
-    
+
     if type(x1ds[0]) is str:
         x1dfiles = x1ds
         x1ds = map(fits.open, x1dfiles)
-    
+
     welist = map(wave_edges, x1ds)
     data = [[x1d[1].data[s] for s in ['flux', 'error', 'dq']] for x1d in x1ds]
     f, e, dq = zip(*data)
     t = [x1d[1].header['exptime'] for x1d in x1ds]
-    
+
     return specutils.coadd(welist, f, e, t, dq)
 
 def tagx1dlist(folder,sorted=False):
@@ -168,7 +168,7 @@ def tagx1dlist(folder,sorted=False):
             raise ValueError('No x1d file found for observation {}'.format(obsid))
         x1ds.extend([os.path.join(folder, x1d)]*len(tag))
     return tags,x1ds
-    
+
 def tag2x1d(tagname):
     """Determine the corresponding x1d filename from  tag filename."""
     return re.sub('_(corr)?tag_?[ab]?.fits', '_x1d.fits', tagname)
