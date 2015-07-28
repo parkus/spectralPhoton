@@ -1,3 +1,4 @@
 import x1dutils
-from spectrify import *
 import convenience as cv
+from spectrify import spectrify
+import x2dutils
