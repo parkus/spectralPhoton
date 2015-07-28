@@ -328,6 +328,58 @@ def spectral_curves(t, w, tback=None, wback=None, bands=None, dN=None, tbins=Non
 
     return tedges,cps,cps_err
 
+def smooth_curve(t, w, eps, n, bands=None, trange=None):
+    """
+    #TODO: write docstring
+    """
+    # GROOM INPUT
+    #------------
+    t, w, eps = map(__asdblary, [t, w, eps])
+
+    assert np.all(t[1:] > t[:-1])
+
+    if bands is None: bands = [[np.nanmin(w), np.nanmax(w)]]
+    if trange is None:
+        trange = t[[0,-1]]
+        t, w, eps = t[1:-1], w[1:-1], eps[1:-1]
+
+    #FIXME: make separate function for the stuff in common with spectral_curves
+    bands = np.array(bands)
+    order = np.argsort(bands, 0)[:,0]
+    bands = bands[order]
+    wedges = np.ravel(bands)
+    if any(wedges[1:] < wedges[:-1]):
+        raise ValueError('Wavelength bands cannot overlap.')
+
+    weighted = (eps is not None)
+
+    # PARSE IN-BAND COUNTS
+    #---------------------
+    ## determine where photons fall in order of wavelength edges
+    i = np.searchsorted(wedges, w)
+
+    ## keep only those that fall within a band (even number in sort order)
+    keep = (i % 2 == 1)
+    t = t[keep]
+    eps = eps[keep]
+
+    # SMOOTH
+    #-------
+    cnt = mynp.smooth(eps, n, safe=True)
+    tmid = mynp.smooth(t, n, safe=True)
+    cnterr = np.sqrt(mynp.smooth(eps**2, n, safe=True))
+
+    # GET TIME BINS
+    #--------------
+    # get midpoints between counts
+    temp = np.insert(t, [0, len(t)], trange)
+    t2 = mynp.smooth(temp, 2, safe=True)
+    t0 = t2[:-n]
+    t1 = t2[n:]
+    dt = t1 - t0
+
+    return t0, t1, cnt/dt, cnterr/dt
+
 def __count_density(xvec, signal, varsignal, back, varback, area_ratio, minvar):
     deltas = xvec[1:] - xvec[:-1]
     var = np.copy(varsignal) #if identical to signal, it was not copied earlier
@@ -353,6 +405,10 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     #join the edges into one list for use with mnp.divvy
     edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
 
+    # since divvy excludes stuff outside of bins, we need to decrement indices
+    iback -= 1
+    isignal -= 1
+
     #check for bad input
     if any(edges[1:] < edges[:-1]):
         raise ValueError('Signal and/or background ribbons overlap. This '
@@ -369,7 +425,7 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
 
         return signal, back, area_ratio
 
-def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
+def     squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     """Extracts counts from the signal and background regions and returns them
     as a single array.
 
@@ -401,7 +457,7 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     """
     cnts = np.copy(counts)
 
-    #join the edges into one list for use with mnp.divvy
+    #join the edges into one list
     edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
 
     #check for bad input
