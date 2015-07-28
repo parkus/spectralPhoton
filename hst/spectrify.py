@@ -33,8 +33,22 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
     
     for i,t in enumerate(tag):
         if t.name != 'EVENTS': continue
+
         td,th = t.data, t.header
+
+        mjd = td['time'].astype('f8')/24.0/3600.0 + th['expstart']
+
         if traceloc == 'stsci':
+            """
+            Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
+            x1d gross array, but these results in an extraction ribbon that has a varying height and center -- not
+            the parallelogram that is described in the Data Handbook as of 2015-07-28. The parameters in the
+            xtractab reference file differ from those populated in the x1d header. So, I've punted and stuck with
+            using the x1d header parameters because it is easy and I think it will make little difference for most
+            sources. The largest slope listed in the xtractab results in a 10% shift in the spectral trace over the
+            length of the detector. In general, I should just check to be sure the extraction regions I'm using are
+            reasonable.
+            """
             yexpected, yoff = [x1d[1].header[s+segment] for s in 
                                ['SP_LOC_','SP_OFF_']]
             yspec = yexpected + yoff
@@ -47,7 +61,7 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
             Npixy = th['talen3']
             xdisp = __lya_trace(td['wavelength'], td['yfull'], Npixy)
         epera = computeEperA(td['wavelength'],order)
-        tag[i] = utils.append_cols(t, ['xdisp', 'epera'], ['1E', '1E'], [xdisp, epera])
+        tag[i] = utils.append_cols(t, ['xdisp', 'epera', 'mjd'], ['1D']*3, [xdisp, epera, mjd])
 
 def spectrifySTIS(tag, x1d, traceloc='stsci'):
     """
@@ -70,11 +84,13 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
     for i,t in enumerate(tag):
         if t.name != 'EVENTS': continue
         td, th = t.data, t.header
-        
+
         #change time scale to s
         td['time'] = td['time']*th['tscal1']
         del(th['tscal1'])
-        
+
+        mjd = td['time'].astype('f8')/24.0/3600.0 + th['expstart']
+
         x,y = td['axis1'],td['axis2']
         #there seem to be issues with at the stsci end with odd and even
         #pixels having systematically different values (at least for g230l)
@@ -129,9 +145,9 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
                 xdisp = __lya_trace(wave, y, Ny_tag)
             epera = computeEperA(wave)
         
-        newcols = ['wavelength', 'xdisp', 'epera', 'order', 'dq']
-        dtypes = ['1E']*3 + ['1I']*2
-        data = [wave, xdisp, epera, order, dq]
+        newcols = ['wavelength', 'xdisp', 'epera', 'mjd', 'order', 'dq']
+        dtypes = ['1D']*4 + ['1I']*2
+        data = [wave, xdisp, epera, mjd, order, dq]
         tag[i] = utils.append_cols(t, newcols, dtypes, data)
     
 def __median_trace(x, y, Npix, binfac=1):
