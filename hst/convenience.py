@@ -759,10 +759,9 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
         stacked = t[1:] == t[:-1]
         if np.any(stacked):
             dt = 32e-3/10.0 if _iscos(x1d) else 125e-6/10.0
-            jitter = np.random.uniform(-dt, dt, np.sum(stacked))
+            jitter = np.random.uniform(-dt, dt, np.sum(stacked)).astype('f8')
             t[stacked] += jitter
             cnts['time'] = t
-            cnts['mjd'][stacked] += jitter/3600.0/24.0
             isort = np.argsort(t)
             cnts = cnts[isort]
 
@@ -774,7 +773,7 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
         # sort the counts into those from the previous exposure
         if mjdstart == mjdstartOld:
             i = np.searchsorted(cntList[-1]['time'], cnts['time'])
-            cntList[-1] = np.insert(cntList[-1], i, cnts, axis=1)
+            cntList[-1] = np.insert(cntList[-1], i, cnts)
             expnoList[-1] = np.append(expnoList[-1], expnovec)
         else:
             expno += 1
@@ -797,6 +796,7 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
 
     prihdr = fits.Header()
     prihdr['MJD0'] = mjd0
+    prihdr['EXPTIME'] = np.sum(gti1 - gti0)
     cmt = "This file contains photon data from one or more HST observations identified by the obs_IDs header " \
           "card. \"Photons\" from background detector regions are given a negative weight so that they can be " \
           "summed with photons from the source region to offset spurious photons in that region."
@@ -804,7 +804,7 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
     prihdu = fits.PrimaryHDU(header=prihdr)
 
     # events
-    cols = [fits.Column(array=a, name=n, format='D') for a,n in zip(cnts, names)]
+    cols = [fits.Column(array=cnts[n], name=n, format='D') for n in cnts.dtype.names]
     cols.append(fits.Column(array=expno, name='expno', format='B'))
     cntshdu = fits.BinTableHDU.from_columns(cols, name='events')
     cntshdu.name = 'events'
@@ -902,7 +902,7 @@ def _parsetags(tag, x1d, ysignal, yback, wr=None):
     if  'DQ' in tag[1].data.names:
         names.append('dq')
         iwant = slice(2, None)
-    names.extend(['time', 'mjd', 'wavelength', 'epera'])
+    names.extend(['time', 'wavelength', 'epera'])
     if 'EPSILON' in tag[1].data.names:
         names.append('epsilon')
 

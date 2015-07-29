@@ -36,8 +36,6 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
 
         td,th = t.data, t.header
 
-        mjd = td['time'].astype('f8')/24.0/3600.0 + th['expstart']
-
         if traceloc == 'stsci':
             """
             Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
@@ -61,7 +59,7 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
             Npixy = th['talen3']
             xdisp = __lya_trace(td['wavelength'], td['yfull'], Npixy)
         epera = computeEperA(td['wavelength'],order)
-        tag[i] = utils.append_cols(t, ['xdisp', 'epera', 'mjd'], ['1D']*3, [xdisp, epera, mjd])
+        tag[i] = utils.append_cols(t, ['xdisp', 'epera'], ['1D']*2, [xdisp, epera])
 
 def spectrifySTIS(tag, x1d, traceloc='stsci'):
     """
@@ -88,8 +86,6 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
         #change time scale to s
         td['time'] = td['time']*th['tscal1']
         del(th['tscal1'])
-
-        mjd = td['time'].astype('f8')/24.0/3600.0 + th['expstart']
 
         x,y = td['axis1'],td['axis2']
         #there seem to be issues with at the stsci end with odd and even
@@ -145,9 +141,9 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
                 xdisp = __lya_trace(wave, y, Ny_tag)
             epera = computeEperA(wave)
         
-        newcols = ['wavelength', 'xdisp', 'epera', 'mjd', 'order', 'dq']
-        dtypes = ['1D']*4 + ['1I']*2
-        data = [wave, xdisp, epera, mjd, order, dq]
+        newcols = ['wavelength', 'xdisp', 'epera', 'order', 'dq']
+        dtypes = ['1D']*3 + ['1I']*2
+        data = [wave, xdisp, epera, order, dq]
         tag[i] = utils.append_cols(t, newcols, dtypes, data)
     
 def __median_trace(x, y, Npix, binfac=1):
