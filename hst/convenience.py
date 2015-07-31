@@ -754,17 +754,6 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
         cnts = _parsetags(tag, x1d, ysignal, yback)
         expnovec = np.ones(len(cnts), 'i1') * expno
 
-        # add artificial jitter to counts that have the same time within the time resolution of the instrument
-        t = cnts['time']
-        stacked = t[1:] == t[:-1]
-        if np.any(stacked):
-            dt = 32e-3/10.0 if _iscos(x1d) else 125e-6/10.0
-            jitter = np.random.uniform(-dt, dt, np.sum(stacked)).astype('f8')
-            t[stacked] += jitter
-            cnts['time'] = t
-            isort = np.argsort(t)
-            cnts = cnts[isort]
-
         # offset times appropriately
         toff = (mjdstart - mjd0) * 24.0 * 3600.0
         cnts['time'], gti0, gti1 = cnts['time']+toff, gti0+toff, gti1+toff
@@ -788,6 +777,20 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
     cnts = np.hstack(cntList)
     expno = np.hstack(expnoList)
     gti0, gti1 = map(np.unique, [gti0List, gti1List])
+
+    # add artificial jitter to counts that have the same time within the time resolution of the instrument
+    t = cnts['time']
+    stacked = t[1:] == t[:-1]
+    if np.any(stacked):
+        dt = 32e-3/2.0*0.99 if _iscos(x1d) else 125e-6/2.0*0.99
+        _, tcnt = np.unique(t, return_counts=True)
+        slices = np.insert(tcnt.cumsum(), 0, 0)
+        repeated = tcnt > 1
+        for i0, i1, n in zip(slices[:-1][repeated], slices[1:][repeated], tcnt[repeated]):
+            jitter = np.linspace(-dt, dt, n)
+            t[i0:i1] += jitter
+        cnts['time'] = t
+    assert np.all(cnts['time'][1:] > cnts['time'][:-1])
 
     # discard counts in non-overlapping wavelength areas
     keep = mnp.inranges(cnts['wavelength'], goodranges)
