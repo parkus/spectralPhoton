@@ -351,8 +351,6 @@ def smooth_curve(t, w, eps, n, bands=None, trange=None):
     if any(wedges[1:] < wedges[:-1]):
         raise ValueError('Wavelength bands cannot overlap.')
 
-    weighted = (eps is not None)
-
     # PARSE IN-BAND COUNTS
     #---------------------
     ## determine where photons fall in order of wavelength edges
@@ -365,9 +363,8 @@ def smooth_curve(t, w, eps, n, bands=None, trange=None):
 
     # SMOOTH
     #-------
-    cnt = mynp.smooth(eps, n, safe=True)
-    tmid = mynp.smooth(t, n, safe=True)
-    cnterr = np.sqrt(mynp.smooth(eps**2, n, safe=True))
+    cnt = mynp.smooth(eps, n, safe=True) * n
+    cnterr = np.sqrt(mynp.smooth(eps**2, n, safe=True) * n)
 
     # GET TIME BINS
     #--------------
@@ -379,6 +376,39 @@ def smooth_curve(t, w, eps, n, bands=None, trange=None):
     dt = t1 - t0
 
     return t0, t1, cnt/dt, cnterr/dt
+
+
+def smooth_spec(w, eps, n, waverange=None):
+    """
+    #TODO: write docstring
+
+    Note that the output is not divided by time.
+    """
+    # GROOM INPUT
+    #------------
+    w, eps = map(__asdblary, [w, eps])
+
+    isort = np.argsort(w)
+    w, eps = w[isort], eps[isort]
+    if waverange is None:
+        waverange = w[[0, -1]]
+
+    # SMOOTH
+    #-------
+    cnt = mynp.smooth(eps, n, safe=True) * n
+    cnterr = np.sqrt(mynp.smooth(eps**2, n, safe=True) * n)
+
+    # GET WAVE BINS
+    #--------------
+    # get midpoints between counts
+    temp = np.insert(w, [0, len(w)], waverange)
+    w2 = mynp.smooth(temp, 2, safe=True)
+    w0 = w2[:-n]
+    w1 = w2[n:]
+    dw = w1 - w0
+
+    return w0, w1, cnt/dw, cnterr/dw
+
 
 def __count_density(xvec, signal, varsignal, back, varback, area_ratio, minvar):
     deltas = xvec[1:] - xvec[:-1]
@@ -425,7 +455,7 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
 
         return signal, back, area_ratio
 
-def     squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
+def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     """Extracts counts from the signal and background regions and returns them
     as a single array.
 
