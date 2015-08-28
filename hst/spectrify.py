@@ -1,5 +1,5 @@
 import x1dutils as utils
-from numpy import random, arange, array, argmin, abs, nan, zeros, ones, median, var, polyfit, polyval, inf
+import numpy as np
 from scipy.interpolate import interp1d
 from mypy.my_numpy import divvy, midpts
 
@@ -25,10 +25,14 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
     """
     Add spectral units (wavelength, cross dispersion distance, energy/area) 
     to the photon table in the fits data unit "tag".
+
+    For G230L, you will get several 'xdisp' columns -- one for each segment. This allows for the use of overlapping
+    background regions.
     """
-    #TODO: check to see if this works with g230l
-    segment = tag[0].header['segment'][-1]
-    order = 0 if segment == 'A' else 1
+    segment = tag[0].header['segment']
+    xd, xh = x1d[1].data, x1d[1].header
+    det = tag[0].header['detector']
+
     computeEperA = utils.x1d_epera_solution(x1d)
     
     for i,t in enumerate(tag):
@@ -36,6 +40,12 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
 
         td,th = t.data, t.header
 
+        if det == 'FUV':
+            n = len(td['time'])
+            order = np.zeros(n) if segment[-1] == 'A' else np.ones(n)
+        if traceloc != 'stsci' and det == 'NUV':
+            raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
+                                      'has not been implemented.')
         if traceloc == 'stsci':
             """
             Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
@@ -47,10 +57,19 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
             length of the detector. In general, I should just check to be sure the extraction regions I'm using are
             reasonable.
             """
-            yexpected, yoff = [x1d[1].header[s+segment] for s in 
-                               ['SP_LOC_','SP_OFF_']]
-            yspec = yexpected + yoff
-            xdisp = td['yfull'] - yspec
+            if det == 'NUV':
+                segs = [s[-1] for s in xd['segment']]
+                yextr = np.array([xh['SP_LOC_' + seg] for seg in segs])
+                xdisps = td['yfull'][np.newaxis, :] - yextr[:, np.newaxis]
+
+                # need to associate orders with each count
+                order = np.argmin(abs(xdisps), 0)
+
+                xdisp = xdisps[order, np.arange(len(td['yfull']))]
+            else:
+                yexpected, yoff = [x1d[1].header[s+segment[-1]] for s in ['SP_LOC_','SP_OFF_']]
+                yspec = yexpected + yoff
+                xdisp = td['yfull'] - yspec
         if traceloc == 'median':
             Npixx  = th['talen2']
             x, y = td['xfull'], td['yfull']
@@ -58,8 +77,10 @@ def spectrifyCOS(tag, x1d, traceloc='stsci'):
         if traceloc == 'lya':
             Npixy = th['talen3']
             xdisp = __lya_trace(td['wavelength'], td['yfull'], Npixy)
-        epera = computeEperA(td['wavelength'],order)
-        tag[i] = utils.append_cols(t, ['xdisp', 'epera'], ['1D']*2, [xdisp, epera])
+
+        epera = computeEperA(td['wavelength'], order)
+
+        tag[i] = utils.append_cols(t, ['order', 'xdisp', 'epera'], ['1I', '1E', '1D'], [order, xdisp, epera])
 
 def spectrifySTIS(tag, x1d, traceloc='stsci'):
     """
@@ -97,32 +118,32 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
         
         #add random offsets within pixel range to avoid wavelength aliasing
         #issues from quantization
-        random.seed(0) #for reproducibility
-        x = x + random.random(x.shape)*2.0
-        y = y + random.random(y.shape)*2.0
+        np.random.seed(0) #for reproducibility
+        x = x + np.random.random(x.shape)*2.0
+        y = y + np.random.random(y.shape)*2.0
         
         #compute interpolation functions for the dispersion line y-value and 
         #the wavelength solution for each order
         Nx_tag, Ny_tag = th['axlen1'], th['axlen2']
         xfac, yfac = Nx_tag/Nx_x1d, Ny_tag/Ny_x1d
-        xpix = arange(1.0 + xfac/2.0, Nx_tag + 1.0, xfac)
+        xpix = np.arange(1.0 + xfac/2.0, Nx_tag + 1.0, xfac)
         interp = lambda vec: interp1d(xpix, vec, bounds_error=False, 
-                                         fill_value=nan)
+                                         fill_value=np.nan)
         extryinterp = map(interp, xd['extrlocy']*yfac)
         waveinterp = map(interp, xd['wavelength'])
-        dqinterp = [interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=nan)
+        dqinterp = [interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=np.nan)
                     for dq in xd['dq']]
         
         if Norders > 1:
             #associate each tag with an order by choosing the closest order
-            xdisp = array([y - yint(x) for yint in extryinterp])
-            line = argmin(abs(xdisp), 0)
+            xdisp = np.array([y - yint(x) for yint in extryinterp])
+            line = np.argmin(abs(xdisp), 0)
             
             #now get all the good stuff
-            xdisp = xdisp[line,arange(len(x))]
+            xdisp = xdisp[line,np.arange(len(x))]
             order = xd['sporder'][line]
             #looping through lines is 20x faster than looping through tags
-            wave, dq = zeros(x.shape), zeros(x.shape, int)
+            wave, dq = np.zeros(x.shape), np.zeros(x.shape, int)
             for l in range(Norders):
                 ind = (line == l)
                 wave[ind] = waveinterp[l](x[ind])
@@ -131,7 +152,7 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
             
         if Norders == 1:
             dq = dqinterp[0](x)
-            order = xd['sporder'][0]*ones(x.shape)
+            order = xd['sporder'][0]*np.ones(x.shape)
             wave = waveinterp[0](x)
             if traceloc == 'stsci':
                 xdisp = (y - extryinterp[0](x))
@@ -153,31 +174,31 @@ def __median_trace(x, y, Npix, binfac=1):
     #recorded in the corrtag files
     
     # get the median y value and rough error in each x pixel
-    cnts = array([x,y])
-    bins = arange(0,Npix+1, binfac)
+    cnts = np.array([x,y])
+    bins = np.arange(0,Npix+1, binfac)
     binned = divvy(cnts, bins)
     binned = [b[1] for b in binned]
-    meds = array(map(median, binned))
-    sig2 = array(map(var, binned))
-    Ns = array(map(len, binned))
-    sig2[Ns <= 1] = inf
+    meds = np.array(map(np.median, binned))
+    sig2 = np.array(map(np.var, binned))
+    Ns = np.array(map(len, binned))
+    sig2[Ns <= 1] = np.inf
     ws = Ns/sig2
     
     # fit a line and subtrqact it from the y values
-    p = polyfit(midpts(bins), meds, 1, w=ws)
-    return y - polyval(p, x)
+    p = np.polyfit(midpts(bins), meds, 1, w=ws)
+    return y - np.polyval(p, x)
     
 def __lya_trace(w, y, ymax):
-    cnts = array([w,y])
+    cnts = np.array([w,y])
     lya_range = [1214.5,1217.2]
     lyacnts, = divvy(cnts, lya_range)
-    ytrace_old = inf
-    ytrace = median(lyacnts[1])
+    ytrace_old = np.inf
+    ytrace = np.median(lyacnts[1])
     dy = ymax/2.0
     #iterative narrow down the yrange to block out the distorted airglow
     while abs(ytrace - ytrace_old)/ytrace > 1e-4:
         dy *= 0.5
         lyacnts, = divvy(lyacnts, [ytrace-dy, ytrace+dy], 1)
         ytrace_old = ytrace
-        ytrace = median(lyacnts[1])
+        ytrace = np.median(lyacnts[1])
     return y - ytrace
