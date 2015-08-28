@@ -433,7 +433,7 @@ def divvy_counts(cnts, ysignal, yback=None, yrow=0):
     eps = count weights
     """
     #join the edges into one list for use with mnp.divvy
-    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
+    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback, cnts, yrow)
 
     # since divvy excludes stuff outside of bins, we need to decrement indices
     iback -= 1
@@ -467,11 +467,11 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
     ---------
     counts : 2D array-like
         The counts, with each row a different dimension (e.g. time, wavelength).
-    ysignal : 1D array-like, length 2
+    ysignal : 1D array-like, length 2, or list of
         [ymin,ymax] limits of signal region
-    yback : 2D array-like, size Nx2, optional
+    yback : 2D array-like, size Nx2, optional, or list of
         [[ymin0,ymax0], [ymin1,ymax1], ...] limits of background regions
-    yrow : int, optional
+    yrow : int or list, optional
         The row of counts that represents the cross-dispersion information.
     weightrows : 1D array-like, optional
         Rows of the counts array that represent count weights. If none, the
@@ -485,10 +485,20 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
         The counts array with counts not in a signal or background region removed
         and weights modified or appended as appropriate.
     """
+    ysignal, yback = map(np.asarray, [ysignal, yback])
+    if ysignal.ndim == 2 or yback.ndim == 3:
+        if ysignal.ndim < 2 or yback.ndim < 3 or not (len(yrow) == len(ysignal) == len(yback)):
+            raise ValueError('If orders are supplied, then ysignal and yback regions must be supplied for each order.')
+        else:
+            cntsList = []
+            for ys, yb, yr in zip(ysignal, yback, yrow):
+                cntsList.append(squish(counts, ys, yb, yr, weightrows))
+            return np.hstack(cntsList)
+
     cnts = np.copy(counts)
 
     #join the edges into one list
-    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback)
+    edges, isignal, iback, area_ratio = __form_edges(ysignal, yback, cnts, yrow)
 
     #check for bad input
     if any(edges[1:] < edges[:-1]):
@@ -518,10 +528,16 @@ def squish(counts, ysignal, yback=None, yrow=0, weightrows=None):
 
     return cnts
 
-def __form_edges(ysignal, yback):
+def __form_edges(ysignal, yback, counts, yrow):
+
     # join the edges into one list
     ys = np.array(ysignal) if yback is None else np.append(ysignal, yback)
     edges = np.unique(ys)
+
+    ymax = counts[yrow].max()
+    ymin = counts[yrow].min()
+    if ymax < edges.max() or ymin > edges.min():
+        raise ValueError('Extraction ribbons include areas beyond the range of the counts.')
 
     # find where signal band is in sorted edges
     isignal = np.searchsorted(edges, mynp.midpts(ysignal))
