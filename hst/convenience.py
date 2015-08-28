@@ -131,14 +131,13 @@ def autocurve(tagfiles, x1dfiles, dt, waste=True, bands='broad', groups=None, ex
         # get what we need out of the fits files
         ysignal, yback = extractionRibbons(x1d, extrsize, bksize, bkoff, 'A')
 
-        cnts, names = _parsetags(taga, x1d, ysignal, yback, wr)
+        cnts = _parsetags(taga, x1d, ysignal, yback, wr)
         toff, tr, tbins, mjdstart = _tinfo(taga, mjdref, dt, waste)
         if tagb:
             ysignal, yback = extractionRibbons(x1d, extrsize, bksize, bkoff, 'B')
-            bcnts = _parsetags(tagb, x1d, ysignal, yback, wr)[0]
-            cnts = np.hstack([cnts, bcnts])
+            bcnts = _parsetags(tagb, x1d, ysignal, yback, wr)
+            cnts = np.concatenate([cnts, bcnts])
 
-        cnts = dict(zip(names, cnts))
         t, w, f = cnts['time'], cnts['wavelength'], cnts['epera']
         e = cnts['epsilon'] if cos else None
 
@@ -531,7 +530,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     ----------
     x2dfile : str
         Path of the x2d file.
-    traceloc : {int|'max'}, optional
+    traceloc : {int|'max'|'lya'}, optional
         Location of the spectral trace.
         int : the midpoint pixel
         'max' : use the mean y-location of the pixel with highest S/N
@@ -586,6 +585,12 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
             raise ValueError("An open x1d file is needed if 'stsci' is "
                              "specified for any of the keywords.")
 
+    # get the ribbon values
+    if extrsize == 'stsci': extrsize = np.mean(xd['extrsize'])
+    if bksize == 'stsci': bksize = np.mean([xd['bk1size'], xd['bk2size']])
+    if bkoff == 'stsci':
+        bkoff = np.mean(np.abs([xd['bk1offst'], xd['bk2offst']]))
+
     # select the trace location
     if traceloc == 'max':
         sn = f / e
@@ -593,12 +598,11 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
         sn[e <= 0.0] = 0.0
         maxpixel = np.nanargmax(sn)
         traceloc = np.unravel_index(maxpixel, f.shape)[0]
-
-    # get the ribbon values
-    if extrsize == 'stsci': extrsize = np.mean(xd['extrsize'])
-    if bksize == 'stsci': bksize = np.mean([xd['bk1size'], xd['bk2size']])
-    if bkoff == 'stsci':
-        bkoff = np.mean(np.abs([xd['bk1offst'], xd['bk2offst']]))
+    if traceloc == 'lya':
+        xmx = np.nanmedian(np.argmax(f, 1))
+        redsum = np.nansum(f[:, xmx+4:xmx+14], 1)
+        smoothsum = mnp.smooth(redsum, extrsize)
+        traceloc = np.argmax(smoothsum) + extrsize/2
 
     # convert everything to integers so we can make slices
     try:
@@ -644,7 +648,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     # subtract the background
     area_ratio = float(extrsize) / bkarea
     f1d = fsig - area_ratio * (fbk0 + fbk1)
-    e1d = np.sqrt(esig ** 2 + (area_ratio * ebk0) ** 2 + (area_ratio * ebk1) ** 2)
+    e1d = np.sqrt(esig**2 + (area_ratio * ebk0)**2 + (area_ratio * ebk1)**2)
 
     # propagate the data quality flags
     q1d = qsig | qbk0 | qbk1
@@ -727,7 +731,7 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
     x1dfiles = [_findx1d(t.filename(), x1dfiles) for t in tags]
     x1ds = map(fits.open, x1dfiles)
 
-    goodranges = x1dutils.wave_overlap(set(x1dfiles), clipends=True)
+    goodranges = x1dutils.wave_overlap(set(x1dfiles), clipends=False)
     goodranges = np.sort(goodranges, 0)
 
     obsids = []
@@ -851,25 +855,27 @@ def extractionRibbons(x1d=None, extrsize='stsci', bksize='stsci', bkoff='stsci',
         if extrsize == 'stsci':
             extrsize = xh['sp_hgt_' + seg] / 2.0
         if bksize == 'stsci':
-            bksize = [xh['b_hgt1_' + seg] / 2.0, xh['b_hgt2_' + seg] / 2.0]
+            bksize = np.array([xh['b_hgt1_' + seg] / 2.0, xh['b_hgt2_' + seg] / 2.0])
         if bkoff == 'stsci':
             ytrace = xh['sp_loc_' + seg]
             ybk1, ybk2 = xh['b_bkg1_' + seg], xh['b_bkg2_' + seg]
             bkoff = [ybk1 - ytrace, ybk2 - ytrace]
+
     if stis:
         if extrsize == 'stsci': extrsize = np.median(xd['extrsize'])
         if bksize == 'stsci': bksize = map(np.median, [xd['bk1size'], xd['bk2size']])
         if bkoff == 'stsci': bkoff = map(np.median, [xd['bk1offst'], xd['bk2offst']])
 
-    ysignal = np.array([-1.0, 1.0]) * extrsize
+    ysignal = np.array([-0.5, 0.5]) * extrsize
     if not hasattr(bkoff, '__iter__'): bkoff = [bkoff]
     if not hasattr(bksize, '__iter__'): bkoff = [bksize]
 
     bksize, bkoff = map(np.array, [bksize, bkoff])
-    yback = np.array([bkoff - bksize, bkoff + bksize]).T
+    yback = np.array([bkoff - bksize/2.0, bkoff + bksize/2.0]).T
 
-    if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
-    if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
+    if bkoff == 'stsci':
+        if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
+        if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
 
     return ysignal, yback
 
@@ -880,7 +886,10 @@ _isstis = lambda x1d: x1d[0].header['instrume'] == 'STIS'
 
 def _getseg(tag, x1d):
     if _iscos(x1d):
-        seg = tag[0].header['segment']
+        if tag[0].header['opt_elem'] == 'G230L':
+            seg = 'NUVA'
+        else:
+            seg = tag[0].header['segment']
     elif _isstis(x1d):
         seg = ''
     else:
@@ -901,16 +910,16 @@ def _parsetags(tag, x1d, ysignal, yback, wr=None):
     # figure out what data we can get from the hdus
     # put what we don't want to keep at the front
     names = ['xdisp']
-    iwant = slice(1, None)
-    if  'DQ' in tag[1].data.names:
+    if 'DQ' in tag[1].data.names:
         names.append('dq')
-        iwant = slice(2, None)
+    iwant = slice(len(names), None)
+
     names.extend(['time', 'wavelength', 'epera'])
     if 'EPSILON' in tag[1].data.names:
         names.append('epsilon')
 
     cntsarr = lambda t: np.array([t.data[s] for s in names])
-    cntslist = [cntsarr(t) for t in tag if t.name == 'EVENTS']
+    cntslist = [cntsarr(t) for t in tag if 'EVENTS' in t.name]
     cnts = np.hstack(cntslist)
 
     # get rid of superfluous and off-detector counts
