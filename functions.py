@@ -549,7 +549,7 @@ def __form_edges(ysignal, yback, counts, yrow):
         area_ratio = float(area_signal)/area_back
 
         # find where background bands are in the sorted edges
-        yback_mids = np.squeeze(mynp.midpts(yback, axis=1))
+        yback_mids = np.reshape(mynp.midpts(yback, axis=1), -1)
         iback = np.searchsorted(edges, yback_mids)
     else:
         iback, area_ratio = None, None

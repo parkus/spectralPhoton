@@ -135,6 +135,9 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
                     for dq in xd['dq']]
         
         if Norders > 1:
+            if traceloc != 'stsci':
+                raise NotImplementedError()
+
             #associate each tag with an order by choosing the closest order
             xdisp = np.array([y - yint(x) for yint in extryinterp])
             line = np.argmin(abs(xdisp), 0)
@@ -142,6 +145,7 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
             #now get all the good stuff
             xdisp = xdisp[line,np.arange(len(x))]
             order = xd['sporder'][line]
+
             #looping through lines is 20x faster than looping through tags
             wave, dq = np.zeros(x.shape), np.zeros(x.shape, int)
             for l in range(Norders):
@@ -154,12 +158,16 @@ def spectrifySTIS(tag, x1d, traceloc='stsci'):
             dq = dqinterp[0](x)
             order = xd['sporder'][0]*np.ones(x.shape)
             wave = waveinterp[0](x)
-            if traceloc == 'stsci':
+            if type(traceloc) in [int, float]:
+                xdisp = (y - traceloc)
+            elif traceloc == 'stsci':
                 xdisp = (y - extryinterp[0](x))
-            if traceloc == 'median':
+            elif traceloc == 'median':
                 xdisp = __median_trace(x, y, Nx_tag)
-            if traceloc == 'lya':
+            elif traceloc == 'lya':
                 xdisp = __lya_trace(wave, y, Ny_tag)
+            else:
+                raise ValueError('Traceloc value of {} not recognized.'.format(traceloc))
             epera = computeEperA(wave)
         
         newcols = ['wavelength', 'xdisp', 'epera', 'order', 'dq']

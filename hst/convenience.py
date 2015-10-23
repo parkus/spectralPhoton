@@ -718,7 +718,8 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     return tbl
 
 
-def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='stsci', fitsout=None, clobber=False):
+def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='stsci', traceloc='stsci', fitsout=None,
+                clobber=False):
 
     tags = map(fits.open, tagfiles)
 
@@ -755,7 +756,7 @@ def specphotons(tagfiles, x1dfiles, extrsize='stsci', bksize='stsci', bkoff='sts
         seg = _getseg(tag, x1d)
         ysignal, yback = extractionRibbons(x1d, extrsize, bksize, bkoff, seg)
 
-        cnts = _parsetags(tag, x1d, ysignal, yback)
+        cnts = _parsetags(tag, x1d, ysignal, yback, traceloc=traceloc)
         expnovec = np.ones(len(cnts), 'i1') * expno
 
         # offset times appropriately
@@ -845,35 +846,35 @@ def extractionRibbons(x1d=None, extrsize='stsci', bksize='stsci', bkoff='stsci',
     Get the default ribbons that stsci used for the x1d extractions, for use
     with spectralPhoton.divvy
     """
-    if x1d is not None:
+    if x1d is not None and 'stsci' in [extrsize, bksize, bkoff]:
         cos, stis = _iscos(x1d), _isstis(x1d)
         xh, xd = x1d[1].header, x1d[1].data
 
-    if cos:
-        # for cos, the hgt keyword specify the full xdisp span of the regions
-        seg = seg[-1]
-        if extrsize == 'stsci':
-            extrsize = xh['sp_hgt_' + seg] / 2.0
-        if bksize == 'stsci':
-            bksize = np.array([xh['b_hgt1_' + seg] / 2.0, xh['b_hgt2_' + seg] / 2.0])
-        if bkoff == 'stsci':
-            ytrace = xh['sp_loc_' + seg]
-            ybk1, ybk2 = xh['b_bkg1_' + seg], xh['b_bkg2_' + seg]
-            bkoff = [ybk1 - ytrace, ybk2 - ytrace]
+        # below these will all be divided by 2 (except bk off), so they specify the full size
+        if cos:
+            seg = seg[-1]
+            if extrsize == 'stsci':
+                extrsize = xh['sp_hgt_' + seg]
+            if bksize == 'stsci':
+                bksize = np.array([xh['b_hgt1_' + seg], xh['b_hgt2_' + seg]])
+            if bkoff == 'stsci':
+                ytrace = xh['sp_loc_' + seg]
+                ybk1, ybk2 = xh['b_bkg1_' + seg], xh['b_bkg2_' + seg]
+                bkoff = [ybk1 - ytrace, ybk2 - ytrace]
 
-    if stis:
-        if extrsize == 'stsci': extrsize = np.median(xd['extrsize'])
-        if bksize == 'stsci': bksize = map(np.median, [xd['bk1size'], xd['bk2size']])
-        if bkoff == 'stsci': bkoff = map(np.median, [xd['bk1offst'], xd['bk2offst']])
+        if stis:
+            if extrsize is 'stsci': extrsize = np.median(xd['extrsize'])
+            if bksize is 'stsci': bksize = map(np.median, [xd['bk1size'], xd['bk2size']])
+            if bkoff is 'stsci': bkoff = map(np.median, [xd['bk1offst'], xd['bk2offst']])
 
     ysignal = np.array([-0.5, 0.5]) * extrsize
     if not hasattr(bkoff, '__iter__'): bkoff = [bkoff]
-    if not hasattr(bksize, '__iter__'): bkoff = [bksize]
+    if not hasattr(bksize, '__iter__'): bksize = [bksize]
 
     bksize, bkoff = map(np.array, [bksize, bkoff])
     yback = np.array([bkoff - bksize/2.0, bkoff + bksize/2.0]).T
 
-    if bkoff == 'stsci':
+    if bkoff is 'stsci':
         if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
         if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
 
@@ -897,7 +898,7 @@ def _getseg(tag, x1d):
     return seg
 
 
-def _parsetags(tag, x1d, ysignal, yback, wr=None):
+def _parsetags(tag, x1d, ysignal, yback, wr=None, traceloc='stsci'):
     """
     Gets spectral information for counts and "squishes" them (keeps only signal
     and negatively weighted background counts and removes cross dispersion
@@ -905,7 +906,7 @@ def _parsetags(tag, x1d, ysignal, yback, wr=None):
     """
 
     # spectrify the counts and put them in an array
-    spectrify(tag, x1d)
+    spectrify(tag, x1d, traceloc=traceloc)
 
     # figure out what data we can get from the hdus
     # put what we don't want to keep at the front
@@ -922,6 +923,10 @@ def _parsetags(tag, x1d, ysignal, yback, wr=None):
     cntslist = [cntsarr(t) for t in tag if 'EVENTS' in t.name]
     cnts = np.hstack(cntslist)
 
+    if 'EPSILON' not in tag[1].data.names:
+        cnts = np.vstack([cnts, np.ones([1,cnts.shape[1]])])
+        names.append('epsilon')
+
     # get rid of superfluous and off-detector counts
     if wr is None:
         wr = [0.0, np.inf]
@@ -929,15 +934,14 @@ def _parsetags(tag, x1d, ysignal, yback, wr=None):
     cnts = cnts[:, keep]
 
     # get rid of counts with bad pha | event burst | bad time interval
-    if 'dq' in cnts:
+    if 'dq' in names:
         baddq = 64 | 512 | 2048
         keep = ~np.bitwise_and(cnts[names.index('dq')], baddq)
         cnts = cnts[:, keep]
 
     # squish
     if cnts.shape[1] > 0:
-        wtrows = [-1, -2] if 'epsilon' in names else [-1]
-        cnts = sp.squish(cnts, ysignal, yback, weightrows=wtrows)
+        cnts = sp.squish(cnts, ysignal, yback, weightrows=[-1, -2])
 
     return np.core.records.fromarrays(cnts[iwant], names=names[iwant])
 
@@ -949,7 +953,7 @@ def _tinfo(tag, mjdref, dt, waste):
     if not waste:
         dt = int(round((tr[1] - tr[0]) / dt))
         if dt == 0: dt = 1
-    return toff, tr, dt, mjdstart
+    return toff, tr, dt, mjdstartd
 
 
 def _findx1d(tagfile, x1dfiles):
