@@ -4,6 +4,7 @@ import astropy.table as _tbl
 import astropy.units as _u
 import astropy.constants as _const
 import numpy as _np
+
 # import mypy.my_numpy as mynp
 
 
@@ -84,22 +85,29 @@ class Photons:
             self.photons['t'].unit = _u.s
             self.photons['w'].unit = _u.AA
 
-        if 'obs_ranges' in kwargs:
-            self.obs_times = kwargs['obs_ranges']
+        if 'obs_times' in kwargs:
+            self.obs_times = kwargs['obs_times']
         else:
-            if 'n' in self:
+            if 'n' in self and len(self) > 0:
                 self.photons.group_by('n')
-                rngs = [[a['t'].min(), a['t'].max()] for a in self.photons.groups]
-                self.obs_times = _np.array(rngs)
+                rngs = [_np.array([[a['t'].min(), a['t'].max()]]) for a in self.photons.groups]
+                self.obs_times = rngs
+            elif len(self) > 0:
+                self.obs_times = [_np.array([[self.photons['t'].min(), self.photons['t'].max]])]
             else:
-                self.obs_times = _np.array([self.photons['t'].min(), self.photons['t'].max])
+                self.obs_times = [_np.array([[]])]
 
         if 'obs_bandpasses' in kwargs:
             self.obs_bandpasses = kwargs['obs_bandpasses']
         else:
-            self.photons.group_by('n')
-            rngs = [[a['w'].min(), a['w'].max()] for a in self.photons.groups]
-            self.obs_bandpasses = _np.array(rngs)
+            if 'n' in self and len(self) > 0:
+                self.photons.group_by('n')
+                rngs = [_np.array([[a['w'].min(), a['w'].max()]]) for a in self.photons.groups]
+                self.obs_bandpasses = rngs
+            elif len(self) > 0:
+                self.obs_bandpasses = [_np.array([[self.photons['w'].min(), self.photons['w'].max]])]
+            else:
+                self.obs_bandpasses = [_np.array([[]])]
 
 
     def __getitem__(self, key):
@@ -161,8 +169,8 @@ class Photons:
         # leave it to the user to deal with sorting and grouping and dealing with overlap as they see fit :)
 
         obs_metadata = self.obs_metadata + other.obs_metadata
-        obs_times = _np.vstack([self.obs_times, other.obs_ranges])
-        obs_bandpasses = _np.vstack([self.obs_bandpasses, other.obs_bandpasses])
+        obs_times = self.obs_times + other.obs_times
+        obs_bandpasses = self.obs_bandpasses + other.obs_bandpasses
 
         return Photons(photons=photons, obs_metadata=obs_metadata, time_datum=self.time_datum, obs_times=obs_times,
                        obs_bandpasses=obs_bandpasses)
@@ -172,14 +180,62 @@ class Photons:
         new = Photons()
         new.obs_metadata = [item.copy() for item in self.obs_metadata]
         new.time_datum = self.time_datum
-        new.bkgnd_area_ratio = self.bkgnd_area_ratio
-        new.obs_times = None if self.obs_times is None else self.obs_times.copy()
+        new.obs_times = [item.copy() for item in self.obs_times]
         new.photons = self.photons.copy()
-        new.obs_bandpasses = self.obs_bandpasses.copy()
+        new.obs_bandpasses = [item.copy() for item in self.obs_bandpasses]
+        return new
 
 
     def __contains__(self, item):
-        return item in self.phtons.colnames
+        return item in self.photons.colnames
+
+
+    def writeFITS(self, path, overwrite=False):
+
+        primary_hdu = _fits.PrimaryHDU()
+
+        # save photontable to first extension
+        photon_cols = []
+        for colname in self.photons.colnames:
+            tbl_col = self['colname']
+            name = _name_dict[colname]
+            format = _format_dict[tbl_col.dtype]
+            fits_col = _fits.Column(name=name, format=format, array=tbl_col.data, unit=str(tbl_col.unit))
+            photon_cols.append(fits_col)
+        photon_hdr = _fits.Header()
+        photon_hdr['zerotime'] = (self.time_datum.jd, 'julian date of time = 0.0')
+        photon_hdu = _fits.BinTableHDU.from_columns(photon_cols, header=photon_hdr)
+
+        # save obs and wave ranges to second extension
+        bandpas0, bandpas1 = _np.vstack(self.obs_bandpasses).T
+        start, stop = _np.vstack(self.obs_times).T
+        obs_nos = range(len(self.obs_bandpasses))
+        arys = [obs_nos, bandpas0, bandpas1, start, stop]
+        names = [_name_dict['n'], 'bandpas0', 'bandpas1', 'start', 'stop']
+        units = [''] + [str(self['w'].unit)]*2 + [str(self['t'].unit)]*2
+        formats = ['I'] + ['D']*4
+        info_cols = [_fits.Column(array=a, name=n, unit=u, format=fmt)
+                     for a,n,u,fmt in zip(arys, names, units, formats)]
+        info_hdr = _fits.Header()
+        info_hdr['comment'] = 'Bandpass and time coverage of each observation.'
+        info_hdu = _fits.BinTableHDU.from_columns(info_cols, header=info_hdr)
+
+        # save obs info as additional headers
+        obs_hdus = []
+        for item in self.obs_metadata:
+            if isinstance(item, _fits.Header):
+                hdr = item
+            elif hasattr(item, 'iteritems'):
+                hdr = _fits.Header(item.iteritems())
+            else:
+                raise ValueError('FITS file cannot be constructed because Photons object has an improper list of '
+                                 'observation metadata. The metadata items must either be pyFITS header objects or '
+                                 'have an "iteritems()" method (i.e. be dictionary-like).')
+            hdu = _fits.BinTableHDU(header=item)
+            obs_hdus.append(hdu)
+
+        hdulist = _fits.HDUList([primary_hdu, photon_hdu, info_hdu] + obs_hdus)
+        hdulist.writeto(path, clobber=overwrite)
 
 
     @classmethod
@@ -206,58 +262,17 @@ class Photons:
 
         # parse observation time and wavelength ranges
         info = hdulist[2].data
-        obj.obs_bandpasses = _np.array([info['bandpas0'], info['bandpas1']]).T
-        obj.obs_times = _np.array([info['start'], info['stop']]).T
+        obs_nos = info[_name_dict['n']]
+        def parse_info(col0, col1):
+            ary = _np.array([info[col0], info[col1]]).T
+            return [ary[obs_nos == i, :] for i in range(obs_nos.max())]
+        obj.obs_bandpasses = parse_info('bandpas0', 'bandpas1')
+        obj.obs_times = parse_info('start', 'stop')
 
         # parse observation metadata
         obj.obs_metadata = [hdu.header for hdu in hdulist[3:]]
 
         return obj
-
-
-    def writeFITS(self, path, overwrite=False):
-
-        primary_hdu = _fits.PrimaryHDU()
-
-        # save photontable to first extension
-        photon_cols = []
-        for colname in self.photons.colnames:
-            tbl_col = self['colname']
-            name = _name_dict[colname]
-            format = _format_dict[tbl_col.dtype]
-            fits_col = _fits.Column(name=name, format=format, array=tbl_col.data, unit=str(tbl_col.unit))
-            photon_cols.append(fits_col)
-        photon_hdr = _fits.Header()
-        photon_hdr['zerotime'] = (self.time_datum.jd, 'julian date of time = 0.0')
-        photon_hdu = _fits.BinTableHDU.from_columns(photon_cols, header=photon_hdr)
-
-        # save obs and wave ranges to second extension
-        bandpas0, bandpas1 = self.obs_bandpasses.T
-        start, stop = self.obs_times.T
-        arys = [bandpas0, bandpas1, start, stop]
-        names = ['bandpas0', 'bandpas1', 'start', 'stop']
-        units = [str(self['w'].unit)]*2 + [str(self['t'].unit)]*2
-        info_cols = [_fits.Column(array=a, name=n, unit=u, format='D') for a,n,u in zip(arys, names, units)]
-        info_hdr = _fits.Header()
-        info_hdr['comment'] = 'Bandpass and time coverage of each observation.'
-        info_hdu = _fits.BinTableHDU.from_columns(info_cols, header=info_hdr)
-
-        # save obs info as additional headers
-        obs_hdus = []
-        for item in self.obs_metadata:
-            if isinstance(item, _fits.Header):
-                hdr = item
-            elif hasattr(item, 'iteritems'):
-                hdr = _fits.Header(item.iteritems())
-            else:
-                raise ValueError('FITS file cannot be constructed because Photons object has an improper list of '
-                                 'observation metadata. The metadata items must either be pyFITS header objects or '
-                                 'have an "iteritems()" method (i.e. be dictionary-like).')
-            hdu = _fits.BinTableHDU(header=item)
-            obs_hdus.append(hdu)
-
-        hdulist = _fits.HDUList([primary_hdu, photon_hdu, info_hdu] + obs_hdus)
-        hdulist.writeto(path, clobber=overwrite)
 
 
 
@@ -356,16 +371,17 @@ class Photons:
         # add/modify weights in 'r' column
         # TRADE: sacrifice memory with a float weights column versus storing the area ratio and just using integer
         # flags because this allows better flexibility when combining photons from multiple observations
-        self['r'] = _np.zeros_like(self['e']) if 'e' in self else _np.seros(len(self), 'f4')
+        self['r'] = _np.zeros_like(self['e']) if 'e' in self else _np.zeros(len(self), 'f4')
         signal = reduce(_np.logical_or, [ii == i for i in isignal])
         self['r'][signal] = 1.0
-        if yback:
+        if len(yback) > 0:
             bkgnd = reduce(_np.logical_or, [ii == i for i in iback])
             self['r'][bkgnd] = -area_ratio
 
 
     def squish(self, keep='both'):
         pass
+
 
 
 
@@ -379,15 +395,20 @@ class Photons:
         # sense for other applications in the future
         weights = self['e'] if 'e' in self else None
 
-        counts = _np.histogram2d(self['w'], self['y'], bins=[wbins, ybins], weights=weights)[0]
+        counts, wbins, ybins = _np.histogram2d(self['w'], self['y'], bins=[wbins, ybins], weights=weights)
         bintime = self.time_per_bin(wbins)
         rates = counts/bintime[:, _np.newaxis]
-        return rates
+        return wbins, ybins, rates
 
 
-    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg'):
+    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all'):
+        if order == 'all':
+            filter = None
+        else:
+            filter = (self['o'] == order)
+
         bin_edges = self._groom_wbins(bins, waverange)
-        counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units)
+        counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter)
 
         # divide by bin widths and exposure time to get rates
         bin_exptime = self.time_per_bin(bin_edges)
@@ -427,7 +448,8 @@ class Photons:
                    energy_units='erg'):
 
         if time_range is None:
-            time_range = [self.obs_times.min(), self.obs_times.max()]
+            obs_times = _np.vstack(self.obs_times)
+            time_range = [obs_times.min(), obs_times.max()]
 
         # construct time bins. this is really where this method is doing a lot of work for the user in dealing with
         # the exposures and associated gaps
@@ -518,12 +540,13 @@ class Photons:
     def check_wavelength_coverage(self, bandpasses):
         covered = []
         for band in bandpasses:
-            if any([band[0] < waverange[0] or band[1] > waverange[1] for waverange in self.obs_bandpasses]):
+            waveranges = _np.vstack(self.obs_bandpasses)
+            beyond_range = [band[0] < waverange[0] or band[1] > waverange[1] for waverange in waveranges]
+            if any(beyond_range):
                 covered.append(False)
             else:
                 covered.append(True)
         return _np.array(covered)
-
 
 
     def total_time(self):
@@ -534,7 +557,8 @@ class Photons:
         -------
         T : float
         """
-        return _np.sum(self.obs_times[:, 1] - self.obs_times[:, 0])
+        obs_times = _np.vstack(self.obs_times)
+        return _np.sum(obs_times[:, 1] - obs_times[:, 0])
 
 
     def time_per_bin(self, bin_edges):
@@ -551,7 +575,8 @@ class Photons:
         widths_full = w1 - w0 # full bin wdiths
 
         t = _np.zeros(len(bin_edges) - 1, 'f8')
-        for tr, wr in zip(self.obs_times, self.obs_bandpasses):
+        time_ranges, wave_ranges = map(_np.vstack,[self.obs_times, self.obs_bandpasses])
+        for tr, wr in zip(time_ranges, wave_ranges):
             # total exposure time for observation
             dt = tr[1] - tr[0]
 
@@ -579,10 +604,10 @@ class Photons:
     # HIDDEN METHODS
     def _get_proper_key(self, key):
         key = key.lower()
-        if key in self.field_dict.values():
+        if key in self._alternate_names.values():
             return key
-        elif key in self.field_dict:
-            return self.field_dict[key]
+        elif key in self._alternate_names:
+            return self._alternate_names[key]
         else:
             raise KeyError('{} not recognized as a field name'.format(key))
 
@@ -611,7 +636,7 @@ class Photons:
     
         if yback is not None:
             # find area ratio of signal to background
-            area_signal = ysignal[1] - ysignal[0]
+            area_signal = _np.sum(_np.diff(ysignal, axis=1))
             area_back = _np.sum(_np.diff(yback, axis=1))
             area_ratio = float(area_signal)/area_back
     
@@ -656,7 +681,8 @@ class Photons:
 
     def _groom_wbins(self, wbins, wrange=None):
         if wrange is None:
-            wrange = [self.obs_bandpasses.min(), self.obs_bandpasses.max()]
+            wranges = _np.vstack(self.obs_bandpasses)
+            wrange = [wranges.min(), wranges.max()]
         return _groom_bins(wbins, wrange)
 
 
@@ -675,7 +701,7 @@ class Photons:
         dt = time_step
         edges, valid = [], []
         marker = 0
-        for rng in self.obs_times:
+        for rng in _np.vstack(self.obs_times):
             # adjust range to fit time_range if necessary
             if rng[0] >= time_range[1] or rng[1] <= time_range[0]:
                 continue
@@ -825,3 +851,14 @@ def _smooth_boilerplate(x, weights, n, xrange=None):
     bin_midpts = (bin_start + bin_stop)/2.0
 
     return bin_start, bin_stop, bin_midpts, rates, errors
+
+
+def _inbins(bins, values):
+    bin_edges = _np.ravel(bins)
+    bin_no = _np.searchsorted(bin_edges, values)
+    return bin_no % 2 == 1
+
+
+# import some submodules. I put these down here because they themselves import and use __init__. This is probably
+# bad. Maybe the photons class should be split out from __init__...
+import hst
