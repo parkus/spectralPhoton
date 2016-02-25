@@ -80,21 +80,23 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
     # parse observation metadata
     hdr = tag[0].header + tag[1].header + x1d[1].header
-    photons.obs_metadata = [hdr]
 
     # parse observation time datum
-    photons.time_datum = _time.Time(hdr['expstart'], format='mjd')
-
-    # parse observation time range
-    gti = tag['GTI'].data
-    time_ranges = _np.array([gti['start'], gti['stop']]).T
-    photons.obs_times = [time_ranges]
+    time_datum = _time.Time(hdr['expstart'], format='mjd')
 
     # parse observation wavelength ranges. areas where every pixel has at least one flag matching clipflags will be
     # clipped. for STIS almost every pixel is flagged with bits 2 and 9, so these are ignored
     clipflags = 2 + 128 + 256 if stis else 8 + 128 + 256
     wave_ranges = good_waverange(x1d, clipends=clipends, clipflags=clipflags)
-    photons.obs_bandpasses = [wave_ranges]
+    
+    # parse observation time range
+    gti = tag['GTI'].data
+    time_ranges = _np.array([gti['start'], gti['stop']]).T
+
+    for time_range in time_ranges:
+        photons.obs_metadata = [hdr]
+        photons.obs_times = _np.array([time_ranges])
+
 
     if cos:
         # keep only the wavelength range of the appropriate segment if FUV detector

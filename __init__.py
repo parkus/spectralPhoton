@@ -92,24 +92,24 @@ class Photons:
         else:
             if 'n' in self and len(self) > 0:
                 self.photons.group_by('n')
-                rngs = [_np.array([[a['t'].min(), a['t'].max()]]) for a in self.photons.groups]
+                rngs = _np.array([[a['t'].min(), a['t'].max()] for a in self.photons.groups])
                 self.obs_times = rngs
             elif len(self) > 0:
-                self.obs_times = [_np.array([[self.photons['t'].min(), self.photons['t'].max]])]
+                self.obs_times = _np.array([[self.photons['t'].min(), self.photons['t'].max]])
             else:
-                self.obs_times = [_np.array([[]])]
+                self.obs_times = _np.array([[]])
 
         if 'obs_bandpasses' in kwargs:
             self.obs_bandpasses = kwargs['obs_bandpasses']
         else:
             if 'n' in self and len(self) > 0:
                 self.photons.group_by('n')
-                rngs = [_np.array([[a['w'].min(), a['w'].max()]]) for a in self.photons.groups]
+                rngs = _np.array([[a['w'].min(), a['w'].max()] for a in self.photons.groups])
                 self.obs_bandpasses = rngs
             elif len(self) > 0:
-                self.obs_bandpasses = [_np.array([[self.photons['w'].min(), self.photons['w'].max]])]
+                self.obs_bandpa sses = _np.array([[self.photons['w'].min(), self.photons['w'].max]])
             else:
-                self.obs_bandpasses = [_np.array([[]])]
+                self.obs_bandpasses = _np.array([[]])
 
 
     def __getitem__(self, key):
@@ -171,8 +171,8 @@ class Photons:
         # leave it to the user to deal with sorting and grouping and dealing with overlap as they see fit :)
 
         obs_metadata = self.obs_metadata + other.obs_metadata
-        obs_times = self.obs_times + other.obs_times
-        obs_bandpasses = self.obs_bandpasses + other.obs_bandpasses
+        obs_times = _np.vstack([self.obs_times, other.obs_times])
+        obs_bandpasses = _np.vstack([self.obs_bandpasses, other.obs_bandpasses])
 
         return Photons(photons=photons, obs_metadata=obs_metadata, time_datum=self.time_datum, obs_times=obs_times,
                        obs_bandpasses=obs_bandpasses)
@@ -182,9 +182,9 @@ class Photons:
         new = Photons()
         new.obs_metadata = [item.copy() for item in self.obs_metadata]
         new.time_datum = self.time_datum
-        new.obs_times = [item.copy() for item in self.obs_times]
+        new.obs_times = self.obs_times.copy()
         new.photons = self.photons.copy()
-        new.obs_bandpasses = [item.copy() for item in self.obs_bandpasses]
+        new.obs_bandpasses = self.obs_bandpasses.copy()
         return new
 
 
@@ -220,8 +220,8 @@ class Photons:
         photon_hdu = _fits.BinTableHDU.from_columns(photon_cols, header=photon_hdr)
 
         # save obs and wave ranges to second extension
-        bandpas0, bandpas1 = _np.vstack(self.obs_bandpasses).T
-        start, stop = _np.vstack(self.obs_times).T
+        bandpas0, bandpas1 = self.obs_bandpasses.T
+        start, stop = self.obs_times.T
         obs_nos = range(len(self.obs_bandpasses))
         arys = [obs_nos, bandpas0, bandpas1, start, stop]
         names = [_name_dict['n'], 'bandpas0', 'bandpas1', 'start', 'stop']
@@ -288,8 +288,7 @@ class Photons:
         info = hdulist[2].data
         obs_nos = info[_name_dict['n']]
         def parse_info(col0, col1):
-            ary = _np.array([info[col0], info[col1]]).T
-            return [ary[obs_nos == i, :] for i in range(obs_nos.max())]
+            return _np.array([info[col0], info[col1]]).T
         obj.obs_bandpasses = parse_info('bandpas0', 'bandpas1')
         obj.obs_times = parse_info('start', 'stop')
 
@@ -327,7 +326,7 @@ class Photons:
         dt = dt.to(self['t'].unit).value
         self['t'] -= dt
         self.time_datum = new_datum
-        self.obs_times = [t - dt for t in self.obs_times]
+        self.obs_times -= dt
 
 
     def match_units(self, other):
@@ -700,9 +699,9 @@ class Photons:
         """
         covered = []
         for band in bandpasses:
-            waveranges = _np.vstack(self.obs_bandpasses)
-            beyond_range = [band[0] < waverange[0] or band[1] > waverange[1] for waverange in waveranges]
-            if any(beyond_range):
+            waveranges = self.obs_bandpasses
+            beyond_range = (band[0] < self.obs_bandpasses[:,0]) | (band[1] > self.obs_bandpasses[:,1])
+            if _np.any(beyond_range):
                 covered.append(False)
             else:
                 covered.append(True)
@@ -717,8 +716,7 @@ class Photons:
         -------
         T : float
         """
-        obs_times = _np.vstack(self.obs_times)
-        return _np.sum(obs_times[:, 1] - obs_times[:, 0])
+        return _np.sum(self.obs_times[:, 1] - self.obs_times[:, 0])
 
 
     def time_per_bin(self, bin_edges, time_range=None):
@@ -745,32 +743,31 @@ class Photons:
         widths_full = w1 - w0 # full bin wdiths
 
         t = _np.zeros(len(w0), 'f8')
-        for tranges, wranges  in zip(self.obs_times, self.obs_bandpasses):
+        for trange, wrange  in zip(self.obs_times, self.obs_bandpasses):
             if time_range is not None:
-                if tranges[0,0] < time_range[0]:
-                    tranges[0,0] = time_range[0]
-                if tranges[-1,1] > time_range[1]:
-                    tranges[-1,1] = time_range[1]
+                if trange[0] < time_range[0]:
+                    trange[0] = time_range[0]
+                if trange[1] > time_range[1]:
+                    trange[1] = time_range[1]
 
             # total exposure time for observation
-            dt = _np.sum(tranges[:,1] - tranges[:,0])
+            dt = trange[1] - trange[0]
 
-            for wr in wranges:
-                # shift left edges of bins left of wr to wr[0], same for right edges right of wr[1]
-                # use copies to avoid modfying input bin_edges
-                _w0, _w1 = w0.copy(), w1.copy()
-                _w0[w0 < wr[0]] = wr[0]
-                _w1[w1 > wr[1]] = wr[1]
+            # shift left edges of bins left of wr to wr[0], same for right edges right of wr[1]
+            # use copies to avoid modfying input bin_edges
+            _w0, _w1 = w0.copy(), w1.copy()
+            _w0[w0 < wrange[0]] = wrange[0]
+            _w1[w1 > wrange[1]] = wrange[1]
 
-                # recompute bin widths, now those fully outside of wr will have negative value, so set them to 0.0
-                widths_partial = _w1 - _w0
-                widths_partial[widths_partial < 0] = 0.0
+            # recompute bin widths, now those fully outside of wr will have negative value, so set them to 0.0
+            widths_partial = _w1 - _w0
+            widths_partial[widths_partial < 0] = 0.0
 
-                # compute and add exposure times, using fractional of bin width after adjusting to wr vs original bin
-                # widths. this will cause bins outside of wr to get 0 exposure time, those inside to get full exposure
-                # time, and partial bins to get partial exposure time
-                fractions = widths_partial / widths_full
-                t += fractions*dt
+            # compute and add exposure times, using fractional of bin width after adjusting to wr vs original bin
+            # widths. this will cause bins outside of wr to get 0 exposure time, those inside to get full exposure
+            # time, and partial bins to get partial exposure time
+            fractions = widths_partial / widths_full
+            t += fractions*dt
 
         return t
 
@@ -905,8 +902,7 @@ class Photons:
         wbins
         """
         if wrange is None:
-            wranges = _np.vstack(self.obs_bandpasses)
-            wrange = [wranges.min(), wranges.max()]
+            wrange = [self.obs_bandpasses.min(), self.obs_bandpasses.max()]
         return _groom_bins(wbins, wrange)
 
 
@@ -918,8 +914,7 @@ class Photons:
     def _construct_time_bins(self, time_step, bin_method, time_range=None):
 
         if time_range is None:
-            obs_times = _np.vstack(self.obs_times)
-            time_range = [obs_times.min(), obs_times.max()]
+            time_range = [self.obs_times.min(), self.obs_times.max()]
 
         # check for valid input
         validspecs = ['elastic', 'full', 'partial']
@@ -930,7 +925,7 @@ class Photons:
         dt = time_step
         edges, valid = [], []
         marker = 0
-        for rng in _np.vstack(self.obs_times):
+        for rng in self.obs_times:
             # adjust range to fit time_range if necessary
             if rng[0] >= time_range[1] or rng[1] <= time_range[0]:
                 continue
