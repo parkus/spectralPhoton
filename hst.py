@@ -13,6 +13,20 @@ import utils as _utils
 
 
 def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True):
+    """
+
+    Parameters
+    ----------
+    directory
+    traceloc
+    fluxed
+    divvied
+    clipends
+
+    Returns
+    -------
+    Photons object
+    """
 
     # find all the tag files and matching x1d files
     tagfiles, x1dfiles = _obs_files(directory)
@@ -35,6 +49,21 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
 
 
 def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True):
+    """
+
+    Parameters
+    ----------
+    tagfile
+    x1dfile
+    traceloc
+    fluxed
+    divvied
+    clipends
+
+    Returns
+    -------
+    Photons object
+    """
 
     fluxit = fluxed not in ['none', None, False]
     divvyit = divvied or fluxit
@@ -68,17 +97,26 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     photons.obs_bandpasses = [wave_ranges]
 
     if cos:
+        # keep only the wavelength range of the appropriate segment if FUV detector
+        if hdr['detector'] == 'FUV':
+            i = 0 if hdr['segment'] == 'FUVA' else 1
+            photons.obs_bandpasses[0] = photons.obs_bandpasses[0][[i], :]
 
         # parse photons. I'm going to use sneaky list comprehensions and such. sorry. this is nasty because
         # supposedly stsci sometimes puts tags into multiple 'EVENTS' extensions
         get_data = lambda extension: [extension.data[s] for s in ['time', 'wavelength', 'epsilon', 'dq', 'pha']]
         data_list = [get_data(extension) for extension in tag if extension.name == 'EVENTS']
         data = map(_np.hstack, zip(*data_list))
-        photons.ph = _tbl.Table(data=data, names=['t', 'w', 'e', 'q', 'pulse_height'])
+        photons.photons = _tbl.Table(data=data, names=['t', 'w', 'e', 'q', 'pulse_height'])
 
         # add cross dispersion and order info
         xdisp, order = _get_yinfo_COS(tag, x1d, traceloc)
         photons['y'], photons['o'] = xdisp, order
+
+        # cull anomalous events
+        bad_dq = 64 | 512 | 2048
+        bad = (_np.bitwise_and(photons['dq'], bad_dq) > 0)
+        photons.photons = photons.photons[~bad]
 
         # add signal/background column to photons
         if divvyit:
@@ -359,7 +397,18 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
 
     For G230L, you will get several 'xdisp' columns -- one for each segment. This allows for the use of overlapping
     background regions.
+
+    Parameters
+    ----------
+    tag
+    x1d
+    traceloc
+
+    Returns
+    -------
+    xdisp, order
     """
+
     segment = tag[0].header['segment']
     xd, xh = x1d[1].data, x1d[1].header
     det = tag[0].header['detector']
@@ -369,11 +418,6 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
         if t.name != 'EVENTS': continue
 
         td,th = t.data, t.header
-
-        # for FUV detector "order" will be used to specify A or B segment
-        if det == 'FUV':
-            n = len(td['time'])
-            order = _np.zeros(n) if segment[-1] == 'A' else _np.ones(n)
 
         if traceloc != 'stsci' and det == 'NUV':
             raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
@@ -408,7 +452,7 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
                 yexpected, yoff = [x1d[1].header[s+segment[-1]] for s in ['SP_LOC_','SP_OFF_']]
                 yspec = yexpected + yoff
                 xdisp = td['yfull'] - yspec
-                order = _np.zeros_like(xdisp) if segment[-1] == 'A' else _np.ones_like(xdisp)
+                order = _np.zeros(len(td), 'i2') if segment[-1] == 'A' else _np.ones(len(td), 'i2')
 
         if traceloc == 'median':
             Npixx  = th['talen2']
@@ -428,12 +472,33 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
 
 
 def _get_Aeff(photons, x1d, x1d_row, order, method='x1d_only'):
+    """
+
+    Parameters
+    ----------
+    photons
+    x1d
+    x1d_row
+    order
+    method
+
+    Returns
+    -------
+    Aeff
+    """
 
     # get x1d data
     w, cps, flux, error = [x1d[1].data[s][x1d_row] for s in ['wavelength', 'net', 'flux', 'error']]
 
-    # estimate wavlength bin edges and widths
+    # estimate wavelength bin edges
     edges = _utils.wave_edges(w)
+
+    # keep only the data in the observation ranges
+    keep = (edges[:-1] >= photons.obs_bandpasses[0][0,0]) & (edges[1:] <= photons.obs_bandpasses[0][0,1])
+    w, cps, flux, error = [a[keep] for a in [w, cps, flux, error]]
+    edges = _np.append(edges[:-1][keep], edges[1:][keep][-1])
+
+    # wavelength bin widths
     dw = _np.diff(edges)
 
     if method == 'x1d_only':
@@ -448,12 +513,37 @@ def _get_Aeff(photons, x1d, x1d_row, order, method='x1d_only'):
 
         # downsample the x1d until bins all have a S/N of at least 2. otherwise for low-signal spectra there will be
         # many bins where the effective area is computed to be negative
-        edges, flux, error = _utils.adaptive_downsample(edges, flux, error, 2.0)
+        x_edges_ds = _utils.adaptive_downsample(edges, flux, error, 2.0)[0]
 
         # get count rate spectrum using the x1d wavelength edges
-        cps_density = photons.spectrum(edges, order=order)[2]
-        w = (edges[:-1] + edges[1:])/2.0
-        dw = _np.diff(edges)
+        cps_density, cps_error = photons.spectrum(edges, order=order)[2:4]
+
+        # downsample count rate spectrum
+        cps_edges_ds = _utils.adaptive_downsample(edges, cps_density, cps_error, 2.0)[0]
+
+        # keep coarsest bins from either spectrum. this is ugly and slow, sorry
+        edges_ds = [edges[0]]
+        i, j = 1, 1
+        while edges_ds[-1] < edges[-1]:
+            if x_edges_ds[i] > cps_edges_ds[j]:
+                edges_ds.append(x_edges_ds[i])
+                i += 1
+                while cps_edges_ds[j] < edges_ds[-1]:
+                    j += 1
+            else:
+                edges_ds.append(cps_edges_ds[j])
+                j += 1
+                while x_edges_ds[i] < edges_ds[-1]:
+                    i += 1
+        edges_ds = _np.array(edges_ds)
+
+        # rebin x1d flux and tag count rates to coarse (downsampled, ds) binning
+        flux = _utils.rebin(edges_ds, edges, flux)
+        cps_density = _utils.rebin(edges_ds, edges, cps_density)
+
+        # I want counts for the computation below not count density
+        w = (edges_ds[:-1] + edges_ds[1:])/2.0
+        dw = _np.diff(edges_ds)
         cps = cps_density*dw
 
     else:
@@ -478,7 +568,18 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
 
     If there is more than one order, an order array is also added to specify
     which order each photon is likely associated with.
+
+    Parameters
+    ----------
+    tag
+    x1d
+    traceloc
+
+    Returns
+    -------
+    time, wave, xdisp, order, dq
     """
+
     xd = x1d['sci'].data
     Norders = x1d['sci'].header['naxis2']
     Nx_x1d, Ny_x1d = [x1d[0].header[key] for key in ['sizaxis1','sizaxis2']]
@@ -547,7 +648,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
             dq = dqinterp[0](x)
 
             # order is the same for all tags
-            order = xd['sporder'][0]*_np.ones(x.shape)
+            order = xd['sporder'][0]*_np.ones(x.shape, 'i2')
 
             # interpolate wavelength
             wave = waveinterp[0](x)
@@ -573,24 +674,37 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
 
 
 def good_waverange(x1d, clipends=False, clipflags=0b0000000110000100):
-    """Returns the range of good wavelengths based on the x1d.
+    """
+    Returns the range of good wavelengths based on the x1d.
 
     clipends will clip off the areas at the ends of the spectra that have bad
     dq flags.
+
+    Parameters
+    ----------
+    x1d
+    clipends
+    clipflags
+
+    Returns
+    -------
+
     """
     xd = _fits.getdata(x1d) if type(x1d) is str else x1d[1].data
     wave = xd['wavelength']
+    edges = map(_utils.wave_edges, wave)
     if clipends:
         dq = xd['dq']
         minw, maxw = [], []
-        for w,d in zip(wave,dq):
+        for e,d in zip(edges,dq):
             dq_match = _np.bitwise_and(d, clipflags)
             good = (dq_match == 0)
-            minw.append(w[good][0])
-            maxw.append(w[good][-1])
+            w0, w1 = e[:-1], e[1:]
+            minw.append(w0[good][0])
+            maxw.append(w1[good][-1])
         return _np.array([minw,maxw]).T
     else:
-        return _np.array([w[[0,-1]] for w in wave])
+        return _np.array([e[[0,-1]] for e in edges])
 
 
 def tagname2x1dname(tagname):
@@ -599,6 +713,17 @@ def tagname2x1dname(tagname):
 
 
 def stsci_extraction_ranges(x1d, seg=''):
+    """
+
+    Parameters
+    ----------
+    x1d
+    seg
+
+    Returns
+    -------
+    ysignal, yback
+    """
     cos, stis = _iscos(x1d), _isstis(x1d)
     xh, xd = x1d[1].header, x1d[1].data
 
@@ -631,50 +756,28 @@ def stsci_extraction_ranges(x1d, seg=''):
     return ysignal, yback
 
 
-def _x1d_Aeff_solution(x1d):
-    """Uses the x1d file to create a function that computes the energy/area
-    [erg/cm**2] for a count of a given wavelength and spectral line (row no. in
-    the x1d arrays).
-    """
-    #get epera from x1d
-    if type(x1d) is str: x1d = _fits.open(x1d)
-    wave, cps, flux = [x1d[1].data[s] for s in ['wavelength', 'net', 'flux']]
-    dwave = _np.zeros(wave.shape)
-    dwave[:,:-1] = wave[:,1:] - wave[:,:-1]
-    dwave[:,-1] = dwave[:,-2]
-    flux, cps, dwave, wave = map(list, [flux, cps, dwave, wave])
-    for i in range(len(flux)):
-        keep = (cps[i] != 0)
-        flux[i], cps[i], dwave[i], wave[i] = [v[keep] for v in
-                                              [flux[i],cps[i],dwave[i], wave[i]]]
-    EperAperCount = [f/c*d for f,c,d in zip(flux,cps,dwave)]
-
-    #make an inerpolation function for each order
-    intps = [_np.interp1d(w,E,bounds_error=False) for w,E in zip(wave,EperAperCount)]
-
-    #the function to be returned. it chooses the proper interpolation function
-    #based on the orders of the input counts, then uses it to get epera from
-    #wavelength
-    def f(waves, orders=0):
-        if type(orders) == int:
-            eperas = intps[orders](waves)
-        else:
-            eperas = _np.zeros(waves.shape)
-            for i in range(len(intps)):
-                pts = (orders == i)
-                eperas[pts] = intps[i](waves[pts])
-        return eperas
-
-    return f
-
-
 def _same_obs(hdus):
     rootnames = [hdu[0].header['rootname'] for hdu in hdus]
     if not all([name == rootnames[0] for name in rootnames]):
         raise Exception('The fits data units are from different observations.')
 
 
+# TODO test
 def _median_trace(x, y, Npix, binfac=1):
+    """
+
+    Parameters
+    ----------
+    x
+    y
+    Npix
+    binfac
+
+    Returns
+    -------
+    ytrace
+    """
+
     # NOTE: I looked into trying to exclude counts during times when the
     # calibration lamp was on for COS, but this was not easily possible as of
     # 2014-11-20 because the lamp flashes intermittently and the times aren't
@@ -693,10 +796,23 @@ def _median_trace(x, y, Npix, binfac=1):
     # fit a line and subtrqact it from the y values
     midpts = (bins[:-1] + bins[1:])/2.0
     p = _np.polyfit(midpts, meds, 1, w=ws)
-    return y - _np.polyval(p, x)
+    return _np.polyval(p, x)
 
 
+# TODO test
 def _lya_trace(w, y, ymax):
+    """
+
+    Parameters
+    ----------
+    w
+    y
+    ymax
+
+    Returns
+    -------
+    ytrace
+    """
     lya_range = [1214.5,1217.2]
     in_lya = (w > lya_range[0]) & (w < lya_range[1])
     y = y[in_lya]
@@ -710,17 +826,27 @@ def _lya_trace(w, y, ymax):
         y = y[in_region]
         ytrace_old = ytrace
         ytrace = _np.median(y)
-    return y - ytrace
+    return ytrace
 
 
 def _obs_files(directory):
+    """
+
+    Parameters
+    ----------
+    directory
+
+    Returns
+    -------
+    tags,x1ds
+    """
 
     allfiles = _os.listdir(directory)
     tagfiles = filter(lambda s: 'tag' in s, allfiles)
     x1dfiles = filter(lambda s: 'x1d.fits' in s, allfiles)
 
     # obervation identifiers
-    obsids = _np.unique([f[:9] for f in tagfiles])
+    obsids = _np.unique([_fits.getval(f, 'rootname') for f in tagfiles])
 
     tags, x1ds = [],[]
     for obsid in obsids:

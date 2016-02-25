@@ -1,9 +1,19 @@
 import numpy as _np
 
 def wave_edges(wave_midpts):
-    """Reconstructs the wavelength bins used in the x1d.
+    """
+    Reconstructs the wavelength bins used in the x1d.
 
-    Assumes a linear change in the wavelength step."""
+    Assumes a linear change in the wavelength step.
+
+    Parameters
+    ----------
+    wave_midpts
+
+    Returns
+    -------
+    edges
+    """
     w = wave_midpts
 
     # apply a qudratic fit to the bin widths to estimate the bin width at the first point
@@ -24,8 +34,22 @@ def wave_edges(wave_midpts):
 
 
 def adaptive_downsample(bin_edges, density, error, min_SN):
+    """
+
+    Parameters
+    ----------
+    bin_edges
+    density
+    error
+    min_SN
+
+    Returns
+    -------
+    bin_edges_ds, density_ds, error_ds
+    """
+
     # convert bin density to bin value
-    lo, hi = bin_edges[:-1], bin_edges[1:]
+    lo, hi = bin_edges[:-1].copy(), bin_edges[1:].copy()
     d = _np.diff(bin_edges)
     y, e = density*d, error*d
     v = e**2 # variance
@@ -43,12 +67,12 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
         adjacent = _np.zeros_like(i_low_SN, bool)
         adjacent[1:] = (i_low_SN[1:] == i_low_SN[:-1] + 1)
         # however, we need only worry about every other adjacent bin
-        adjacent[::2] = False
+        # thought about doing adjacent[::2] = False, but this causes problems
         i_low_SN = i_low_SN[~adjacent]
 
         # now sum pairs of bins
         if forward:
-            # if the last pt is negative, forget it for this iteration
+            # if the last pt is flagged, forget it for this iteration
             if i_low_SN[-1] == len(y) - 1:
                 i_low_SN = i_low_SN[:-1]
             sum_i = i_low_SN + 1
@@ -73,3 +97,54 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     density_ds, error_ds = y/d_ds, _np.sqrt(v)/d_ds
     bin_edges_ds = _np.append(lo, hi[-1])
     return bin_edges_ds, density_ds, error_ds
+
+def rebin(new_edges, old_edges, density, error=None):
+
+    # get overlapping bins, warn if some don't overlap
+    if (new_edges[0] < old_edges[0]) or (new_edges[-1] > old_edges[-1]):
+        raise ValueError('New bin edges must fall within old bin edges.')
+
+    dold = old_edges[1:] - old_edges[:-1]
+    dnew = new_edges[1:] - new_edges[:-1]
+
+    # making a function so I can easily reuse commands for flux and error
+    def compute(z):
+        # use interpolation of cumulative integral (as sum of density*dw -- like a Riemann sum) as sneaky and fast way
+        # to rebin
+        ## get the value of the integral at each old edge for values and variance
+        Iz = _np.zeros(len(z) + 1) # first pt needs to be zero, so may as well preallocate
+        Iz[1:] = _np.cumsum(z)
+
+        ## interpolate to new edges
+        Iz_new = _np.interp(new_edges, old_edges, Iz)
+
+        ## difference of the integral at each edge gives the values in the new bins
+        z_new = _np.diff(Iz_new)
+
+        return z_new
+
+    # compute rectangular areas
+    y = density*dold
+
+    # sometimes cumsum can result in significant numerical error if summing lots of small numbers, so I'll normalize
+    # to be safe
+    normfac = _np.nanmedian(y[y > 0])
+    normy = y/normfac
+
+    # do the actual rebinning
+    normy_new = compute(normy)
+
+    # un-normalize and return to density
+    density_new = normy_new*normfac/dnew
+
+    # do all this for errors, if provided
+    if error is not None:
+        norme = error*dold/normfac
+        normv = norme**2 # variance
+        normv_new = compute(normv)
+        error_new = _np.sqrt(normv_new)*normfac/dnew
+        return density_new, error_new
+    else:
+        return density_new
+
+
