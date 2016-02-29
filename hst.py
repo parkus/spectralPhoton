@@ -12,6 +12,8 @@ import __init__ as _sp
 import utils as _utils
 
 
+# TODO: test with COS NUV and STIS echelle data
+
 def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True):
     """
 
@@ -29,14 +31,14 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
     """
 
     # find all the tag files and matching x1d files
-    tagfiles, x1dfiles = _obs_files(directory)
+    tagfiles, x1dfiles = obs_files(directory)
 
     # start by parsing photons from first observation
     photons = readtag(tagfiles[0], x1dfiles[0], traceloc, fluxed, divvied, clipends)
 
     # now prepend/append other observations (if available) in order of time
     if len(tagfiles) > 1:
-        for tagfile, x1dfile in zip(tagfiles, x1dfiles):
+        for tagfile, x1dfile in zip(tagfiles[1:], x1dfiles[1:]):
             photons2 = readtag(tagfile, x1dfile, traceloc, fluxed, divvied, clipends)
 
             # add in order of time
@@ -65,21 +67,39 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     Photons object
     """
 
-    fluxit = fluxed not in ['none', None, False]
-    divvyit = divvied or fluxit
-
-    # open files
-    tag, x1d = map(_fits.open, [tagfile, x1dfile])
+    # open tag file
+    tag = _fits.open(tagfile)
 
     # is it a STIS or COS observation?
-    stis = _isstis(x1d)
-    cos = _iscos(x1d)
+    stis = _isstis(tag)
+    cos = _iscos(tag)
+
+    if traceloc in [None, 'none', False]:
+        traceloc = 0.0
+    fluxit = fluxed not in ['none', None, False]
+    divvyit = divvied or fluxit
+    if divvyit and traceloc == 0.0:
+        raise ValueError('Cannot atuomatically divvy events into signal and background regions if a trace '
+                         'location is not specified or et to 0.')
+    if traceloc != 'stsci' and fluxit:
+        raise ValueError('Proper computation of effective area of photon wavelengths (and thus flux) requires '
+                         'that traceloc==\'stsci\'.')
+    if x1dfile is None:
+        if fluxed or divvied:
+            raise ValueError('Cannot flux or divvy the events if no x1d is available.')
+        if traceloc == 'stsci':
+            raise ValueError('If x1d is not provided, the STScI trace location (traceloc) is not known.')
+
+    # open x1d file
+    x1d = _fits.open(x1dfile) if x1dfile is not None else None
 
     # empty photons object
     photons = _sp.Photons()
 
     # parse observation metadata
-    hdr = tag[0].header + tag[1].header + x1d[1].header
+    hdr = tag[0].header + tag[1].header
+    if x1d is not None:
+        hdr += x1d[1].header
     photons.obs_metadata = [hdr]
 
     # parse observation time datum
@@ -90,10 +110,19 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     time_ranges = _np.array([gti['start'], gti['stop']]).T
     photons.obs_times = [time_ranges]
 
-    # parse observation wavelength ranges. areas where every pixel has at least one flag matching clipflags will be
-    # clipped. for STIS almost every pixel is flagged with bits 2 and 9, so these are ignored
-    clipflags = 2 + 128 + 256 if stis else 8 + 128 + 256
-    wave_ranges = good_waverange(x1d, clipends=clipends, clipflags=clipflags)
+    # parse observation wavelength ranges.
+    if x1d is None:
+        if stis:
+            wave_ranges = _np.array([[hdr['minwave'], hdr['maxwave']]])
+        if cos:
+            w = tag[1].data['wavelength']
+            nonzero = w > 0
+            wave_ranges = _np.array([[_np.min(w[nonzero]), _np.max(w[nonzero])]])
+    else:
+        # if x1d is available, areas where every pixel has at least one flag matching clipflags will be
+        # clipped. for STIS almost every pixel is flagged with bits 2 and 9, so these are ignored
+        clipflags = 2 + 128 + 256 if stis else 8 + 128 + 256
+        wave_ranges = good_waverange(x1d, clipends=clipends, clipflags=clipflags)
     photons.obs_bandpasses = [wave_ranges]
 
     if cos:
@@ -122,19 +151,15 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
         if divvyit:
             if hdr['detector'] == 'NUV':
                 limits = [stsci_extraction_ranges(x1d, seg) for seg in ['A', 'B', 'C']]
-                ysignal, yback = zip(limits)
-                ysignal = _np.array(ysignal)
-                yback = _np.vstack(yback)
+                ysignal, yback = zip(*limits)
+                map(photons.divvy, ysignal, yback, [0, 1, 2])
             elif hdr['detector'] == 'FUV':
                 seg = hdr['segment']
                 ysignal, yback = stsci_extraction_ranges(x1d, seg)
-            photons.divvy(ysignal, yback)
+                photons.divvy(ysignal, yback)
 
         # add effective area to photons
         if fluxit:
-            if traceloc != 'stsci':
-                raise ValueError('Proper computation of effective area of photon wavelengths (and thus flux) requires '
-                                 'that traceloc==\'stsci\'.')
             if hdr['detector'] == 'FUV':
                 segments = [0] if hdr['segment'] == 'FUVA' else [1]
             else:
@@ -160,10 +185,6 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
         # add effective area to photons
         if fluxit:
-            if traceloc != 'stsci':
-                raise ValueError('Proper computation of effective area of photon wavelengths (and thus flux) requires '
-                                 'that traceloc==\'stsci\'.')
-
             # get number of orders and the order numbers
             Norders = x1d['sci'].header['naxis2']
             order_nos = x1d['sci'].data['sporder']
@@ -189,6 +210,10 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     photons['w'].unit = _u.AA
     if 'a' in photons:
         photons['a'].unit = _u.cm**2
+
+    tag.close()
+    if x1d:
+        x1d.close()
 
     return photons
 
@@ -410,7 +435,8 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
     """
 
     segment = tag[0].header['segment']
-    xd, xh = x1d[1].data, x1d[1].header
+    if x1d is not None:
+        xd, xh = x1d[1].data, x1d[1].header
     det = tag[0].header['detector']
 
     xdisp_list, order_list = [], []
@@ -419,49 +445,55 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
 
         td,th = t.data, t.header
 
-        if traceloc != 'stsci' and det == 'NUV':
-            raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
-                                      'has not been implemented.')
-        if traceloc == 'stsci':
-            """
-            Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
-            x1d gross array, but these results in an extraction ribbon that has a varying height and center -- not
-            the parallelogram that is described in the Data Handbook as of 2015-07-28. The parameters in the
-            xtractab reference file differ from those populated in the x1d header. So, I've punted and stuck with
-            using the x1d header parameters because it is easy and I think it will make little difference for most
-            sources. The largest slope listed in the xtractab results in a 10% shift in the spectral trace over the
-            length of the detector. In general, I should just check to be sure the extraction regions I'm using are
-            reasonable.
-            """
 
-            # all "orders" (segments) of the NUV spectra fall on the same detector and are just offset in y,
-            # so find the distance of the counts from each order to find which one they match with
-            if det == 'NUV':
-                segs = [s[-1] for s in xd['segment']]
-                yextr = _np.array([xh['SP_LOC_' + seg] for seg in segs])
-                yoff = _np.array([xh['SP_OFF_' + seg] for seg in segs])
-                yspec = yextr + yoff
-                xdisps = td['yfull'][_np.newaxis, :] - yspec[:, _np.newaxis]
 
-                # associate orders with each count
-                order = _np.argmin(abs(xdisps), 0)
+        """
+        Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
+        x1d gross array, but these results in an extraction ribbon that has a varying height and center -- not
+        the parallelogram that is described in the Data Handbook as of 2015-07-28. The parameters in the
+        xtractab reference file differ from those populated in the x1d header. So, I've punted and stuck with
+        using the x1d header parameters because it is easy and I think it will make little difference for most
+        sources. The largest slope listed in the xtractab results in a 10% shift in the spectral trace over the
+        length of the detector. In general, I should just check to be sure the extraction regions I'm using are
+        reasonable.
+        """
 
-                xdisp = xdisps[order, _np.arange(len(td['yfull']))]
-            # otherwise, it's just a simple subtraction
-            else:
+        # all "orders" (segments) of the NUV spectra fall on the same detector and are just offset in y,
+        # so find the distance of the counts from each order to find which one they match with
+        if det == 'NUV':
+            if traceloc != 'stsci':
+                raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
+                                          'has not been implemented.')
+            segs = ['A', 'B', 'C'] # [s[-1] for s in xd['segment']] commented out to make x1d not used
+            yextr = _np.array([xh['SP_LOC_' + seg] for seg in segs])
+            yoff = _np.array([xh['SP_OFF_' + seg] for seg in segs])
+            yspec = yextr + yoff
+            xdisps = td['yfull'][_np.newaxis, :] - yspec[:, _np.newaxis]
+
+            # associate orders with each count
+            order = _np.argmin(abs(xdisps), 0)
+
+            xdisp = xdisps[order, _np.arange(len(td['yfull']))]
+
+        # otherwise, it's just a simple subtraction
+        else:
+            if traceloc == 'stsci':
                 yexpected, yoff = [x1d[1].header[s+segment[-1]] for s in ['SP_LOC_','SP_OFF_']]
                 yspec = yexpected + yoff
-                xdisp = td['yfull'] - yspec
-                order = _np.zeros(len(td), 'i2') if segment[-1] == 'A' else _np.ones(len(td), 'i2')
+            elif traceloc == 'median':
+                Npixx  = th['talen2']
+                x, y = td['xfull'], td['yfull']
+                yspec = _median_trace(x, y, Npixx, 8)
+            elif traceloc == 'lya':
+                Npixy = th['talen3']
+                yspec = _lya_trace(td['wavelength'], td['yfull'], Npixy)
+            elif type(traceloc) in [int, float]:
+                yspec = float(traceloc)
+            else:
+                raise ValueError('traceloc={} not recognized.'.format(traceloc))
 
-        if traceloc == 'median':
-            Npixx  = th['talen2']
-            x, y = td['xfull'], td['yfull']
-            xdisp = _median_trace(x, y, Npixx, 8)
-
-        if traceloc == 'lya':
-            Npixy = th['talen3']
-            xdisp = _lya_trace(td['wavelength'], td['yfull'], Npixy)
+            xdisp = td['yfull'] - yspec
+            order = _np.zeros(len(td), 'i2') if segment[-1] == 'A' else _np.ones(len(td), 'i2')
 
         xdisp_list.append(xdisp)
         order_list.append(order)
@@ -580,11 +612,14 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
     time, wave, xdisp, order, dq
     """
 
-    xd = x1d['sci'].data
-    Norders = x1d['sci'].header['naxis2']
-    Nx_x1d, Ny_x1d = [x1d[0].header[key] for key in ['sizaxis1','sizaxis2']]
+    is_echelle = tag[0].header['opt_elem'].startswith('E')
+    if is_echelle and x1d is None:
+        raise ValueError('Cannot extract events from a STIS echelle spectrum without an x1d.')
 
-    if Norders > 1 and traceloc != 'stsci':
+    if x1d is not None:
+        xd = x1d['sci'].data
+
+    if is_echelle and traceloc != 'stsci':
         raise NotImplemented('Cannot manually determine the spectral trace locations on an echellogram.')
 
     data_list = [] # I will pack the data arrays pulled/computed from each 'events' extension into this
@@ -613,20 +648,33 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
         y = y + _np.random.random(y.shape)*2.0
 
         # compute interpolation functions for the dispersion line y-value and the wavelength solution for each order
-        ## for some reason tag and x1d use different pixel scales, so get the factor of that difference
-        Nx_tag, Ny_tag = header['axlen1'], header['axlen2']
-        xfac, yfac = Nx_tag/Nx_x1d, Ny_tag/Ny_x1d
+        if x1d is None:
+            if header['TC2_3'] != 0:
+                raise NotImplementedError('Whoa! I didn\'t expect that. STScI gave a nonzero value for the change in '
+                                          'waveelngth with change in y pixel. Hmmm, better revise the code to deal '
+                                          'with that.')
+            x0, y0, dydx = [header[s] for s in ['tcrpx2', 'tcrvl2', 'tc2_2']]
+            compute_wave = lambda x: (x - x0)*dydx + y0
+            waveinterp = [compute_wave]
+            dqinterp = [lambda x: _np.zeros(x.shape, bool)]
+        else:
+            # number of x1d pixels
+            Nx_x1d, Ny_x1d = [x1d[0].header[key] for key in ['sizaxis1','sizaxis2']]
 
-        ## make a vector of pixel indices
-        xpix = _np.arange(1.0 + xfac/2.0, Nx_tag + 1.0, xfac)
+            ## for some reason tag and x1d use different pixel scales, so get the factor of that difference
+            Nx_tag, Ny_tag = header['axlen1'], header['axlen2']
+            xfac, yfac = Nx_tag/Nx_x1d, Ny_tag/Ny_x1d
 
-        ## now make interpolation functions, one for each order
-        interp = lambda vec: _interp.interp1d(xpix, vec, bounds_error=False, fill_value=_np.nan)
-        extryinterp = map(interp, xd['extrlocy']*yfac)
-        waveinterp = map(interp, xd['wavelength'])
-        dqinterp = [_interp.interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=_np.nan) for dq in xd['dq']]
+            ## make a vector of pixel indices
+            xpix = _np.arange(1.0 + xfac/2.0, Nx_tag + 1.0, xfac)
 
-        if Norders > 1:
+            ## make interpolation functions
+            interp = lambda vec: _interp.interp1d(xpix, vec, bounds_error=False, fill_value=_np.nan)
+            extryinterp = map(interp, xd['extrlocy']*yfac)
+            waveinterp = map(interp, xd['wavelength'])
+            dqinterp = [_interp.interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=_np.nan) for dq in xd['dq']]
+
+        if is_echelle:
             # associate each tag with an order by choosing the closest order. I am using line to count the orders
             # from zero whereas order gives the actual spectral order on the Echelle
             xdisp = _np.array([y - yint(x) for yint in extryinterp])
@@ -639,6 +687,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
             # and interpolate the wavelength and data quality flags
             # looping through orders is 20x faster than looping through tags
             wave, dq = _np.zeros(x.shape), _np.zeros(x.shape, int)
+            Norders = x1d['sci'].header['naxis2']
             for l in range(Norders):
                 ind = (line == l)
                 wave[ind] = waveinterp[l](x[ind])
@@ -648,22 +697,26 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
             dq = dqinterp[0](x)
 
             # order is the same for all tags
-            order = xd['sporder'][0]*_np.ones(x.shape, 'i2')
+            if x1d is None:
+                order = _np.ones(x.shape, 'i2')
+            else:
+                order = xd['sporder'][0]*_np.ones(x.shape, 'i2')
 
             # interpolate wavelength
             wave = waveinterp[0](x)
 
             # get cross dispersion distance depending on specified trace location
             if type(traceloc) in [int, float]:
-                xdisp = (y - traceloc)
+                yspec = traceloc
             elif traceloc == 'stsci':
-                xdisp = (y - extryinterp[0](x))
+                yspec = extryinterp[0](x)
             elif traceloc == 'median':
-                xdisp = _median_trace(x, y, Nx_tag)
+                yspec = _median_trace(x, y, Nx_tag)
             elif traceloc == 'lya':
-                xdisp = _lya_trace(wave, y, Ny_tag)
+                yspec = _lya_trace(wave, y, Ny_tag)
             else:
-                raise ValueError('Traceloc value of {} not recognized.'.format(traceloc))
+                raise ValueError('traceloc={} not recognized.'.format(traceloc))
+            xdisp = y - yspec
 
         # pack the reduced data and move on to the next iteration
         data_list.append([time, wave, xdisp, order, dq])
@@ -799,7 +852,7 @@ def _median_trace(x, y, Npix, binfac=1):
     return _np.polyval(p, x)
 
 
-# TODO test
+# TODO: still doesn't work in all instances. maybe mesaure wdith of lya image and select widest location?
 def _lya_trace(w, y, ymax):
     """
 
@@ -829,7 +882,7 @@ def _lya_trace(w, y, ymax):
     return ytrace
 
 
-def _obs_files(directory):
+def obs_files(directory):
     """
 
     Parameters
@@ -851,21 +904,21 @@ def _obs_files(directory):
     tags, x1ds = [],[]
     for obsid in obsids:
         # look for tag file with matching obsid in filename
-        tags = filter(lambda s: obsid in s, tagfiles)
-        if len(tags) == 0:
+        obs_tags = filter(lambda s: obsid in s, tagfiles)
+        if len(obs_tags) == 0:
             raise ValueError('No tag files found for observation {}'.format(obsid))
-        tags.extend([_os.path.join(directory, tag) for tag in tags])
+        tags.extend([_os.path.join(directory, tag) for tag in obs_tags])
 
         # look for x1d files with matching obsids
-        x1ds = filter(lambda s: obsid in s, x1dfiles)
-        if len(x1ds) == 0:
+        obs_x1ds = filter(lambda s: obsid in s, x1dfiles)
+        if len(obs_x1ds) == 0:
             raise ValueError('No x1d file found for observation {}'.format(obsid))
-        if len(x1ds) > 1:
+        if len(obs_x1ds) > 1:
             raise ValueError('Multiple x1d files found for observation {}'.format(obsid))
 
         # make sure to add an x1d file entry for every tag file (since the corrtag_a and corrtag_b files of cos are
         # both associated with a single x1d)
-        x1ds.extend([_os.path.join(directory, x1ds[0])]*len(tags))
+        x1ds.extend([_os.path.join(directory, obs_x1ds[0])]*len(obs_tags))
 
     return tags,x1ds
 
@@ -874,5 +927,5 @@ def _argsegment(x1d, segment):
     return  _np.nonzero(x1d['segment'] == segment)[0]
 
 
-_iscos = lambda x1d: x1d[0].header['instrume'] == 'COS'
-_isstis = lambda x1d: x1d[0].header['instrume'] == 'STIS'
+_iscos = lambda hdu: hdu[0].header['instrume'] == 'COS'
+_isstis = lambda hdu: hdu[0].header['instrume'] == 'STIS'
