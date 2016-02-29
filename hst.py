@@ -656,7 +656,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
             x0, y0, dydx = [header[s] for s in ['tcrpx2', 'tcrvl2', 'tc2_2']]
             compute_wave = lambda x: (x - x0)*dydx + y0
             waveinterp = [compute_wave]
-            dqinterp = [lambda x: _np.zeros(x.shape, bool)]
+            dqinterp = [lambda x: _np.zeros(x.shape, 'uint16')]
         else:
             # number of x1d pixels
             Nx_x1d, Ny_x1d = [x1d[0].header[key] for key in ['sizaxis1','sizaxis2']]
@@ -672,7 +672,11 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
             interp = lambda vec: _interp.interp1d(xpix, vec, bounds_error=False, fill_value=_np.nan)
             extryinterp = map(interp, xd['extrlocy']*yfac)
             waveinterp = map(interp, xd['wavelength'])
-            dqinterp = [_interp.interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=_np.nan) for dq in xd['dq']]
+            def make_dq_function(dq):
+                f = _interp.interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=_np.nan)
+                return lambda x: f(x).astype('uint16')
+            dqinterp = map(make_dq_function, xd['dq'])
+
 
         if is_echelle:
             # associate each tag with an order by choosing the closest order. I am using line to count the orders
@@ -895,6 +899,7 @@ def obs_files(directory):
     """
 
     allfiles = _os.listdir(directory)
+    allfiles = [_os.path.join(directory, name) for name in allfiles]
     tagfiles = filter(lambda s: 'tag' in s, allfiles)
     x1dfiles = filter(lambda s: 'x1d.fits' in s, allfiles)
 
@@ -907,7 +912,7 @@ def obs_files(directory):
         obs_tags = filter(lambda s: obsid in s, tagfiles)
         if len(obs_tags) == 0:
             raise ValueError('No tag files found for observation {}'.format(obsid))
-        tags.extend([_os.path.join(directory, tag) for tag in obs_tags])
+        tags.extend(obs_tags)
 
         # look for x1d files with matching obsids
         obs_x1ds = filter(lambda s: obsid in s, x1dfiles)
@@ -918,7 +923,7 @@ def obs_files(directory):
 
         # make sure to add an x1d file entry for every tag file (since the corrtag_a and corrtag_b files of cos are
         # both associated with a single x1d)
-        x1ds.extend([_os.path.join(directory, obs_x1ds[0])]*len(obs_tags))
+        x1ds.extend(obs_x1ds*len(obs_tags))
 
     return tags,x1ds
 

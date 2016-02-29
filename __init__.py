@@ -8,7 +8,8 @@ import numpy as _np
 # import mypy.my_numpy as mynp
 
 
-_format_dict = {'uint8':'B', 'int8':'I', 'int16':'I', 'int32':'J', 'int64':'K', 'float32':'E', 'float64':'D'}
+_format_dict = {'uint8':'B', 'int8':'I', 'int16':'I', 'uint16':'J',  'int32':'J', 'int64':'K', 'float32':'E', 
+                'float64':'D'}
 _dtype_keys = map(_np.dtype, _format_dict.keys())
 _format_dict = dict(zip(_dtype_keys, _format_dict.values()))
 _name_dict = {'t':'time', 'w':'wavelength', 'y':'xdisp', 'a':'area_eff', 'q':'qualflag', 'o':'order', 'n':'obs_no',
