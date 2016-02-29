@@ -219,35 +219,35 @@ class Photons:
         photon_hdr['zerotime'] = (self.time_datum.jd, 'julian date of time = 0.0')
         photon_hdu = _fits.BinTableHDU.from_columns(photon_cols, header=photon_hdr)
 
-        # save obs and wave ranges to second extension
-        bandpas0, bandpas1 = _np.vstack(self.obs_bandpasses).T
-        start, stop = _np.vstack(self.obs_times).T
-        obs_nos = range(len(self.obs_bandpasses))
-        arys = [obs_nos, bandpas0, bandpas1, start, stop]
-        names = [_name_dict['n'], 'bandpas0', 'bandpas1', 'start', 'stop']
-        units = [''] + [str(self['w'].unit)]*2 + [str(self['t'].unit)]*2
-        formats = ['I'] + ['D']*4
-        info_cols = [_fits.Column(array=a, name=n, unit=u, format=fmt)
-                     for a,n,u,fmt in zip(arys, names, units, formats)]
-        info_hdr = _fits.Header()
-        info_hdr['comment'] = 'Bandpass and time coverage of each observation.'
-        info_hdu = _fits.BinTableHDU.from_columns(info_cols, header=info_hdr)
 
-        # save obs info as additional headers
+        # save obs metadata, time ranges, bandpasses to additional extensions
         obs_hdus = []
-        for item in self.obs_metadata:
-            if isinstance(item, _fits.Header):
-                hdr = item
-            elif hasattr(item, 'iteritems'):
-                hdr = _fits.Header(item.iteritems())
+        for meta, times, bands in zip(self.obs_metadata, self.obs_times, self.obs_bandpasses):
+            # check that meta can be saved as a fits header
+            if isinstance(meta, _fits.Header):
+                hdr = meta
+            elif hasattr(meta, 'iteritems'):
+                hdr = _fits.Header(meta.iteritems())
             else:
                 raise ValueError('FITS file cannot be constructed because Photons object has an improper list of '
                                  'observation metadata. The metadata items must either be pyFITS header objects or '
                                  'have an "iteritems()" method (i.e. be dictionary-like).')
-            hdu = _fits.BinTableHDU(header=item)
+
+            # save obs time and wave ranges to each extension
+            bandpas0, bandpas1 = bands.T
+            start, stop = times.T
+            arys = [bandpas0, bandpas1, start, stop]
+            names = ['bandpas0', 'bandpas1', 'start', 'stop']
+            units = [str(self['w'].unit)]*2 + [str(self['t'].unit)]*2
+            formats = ['D']*4
+            info_cols = [_fits.Column(array=a, name=n, unit=u, format=fmt)
+                         for a,n,u,fmt in zip(arys, names, units, formats)]
+
+            hdu = _fits.BinTableHDU.from_columns(info_cols, header=meta)
             obs_hdus.append(hdu)
 
-        hdulist = _fits.HDUList([primary_hdu, photon_hdu, info_hdu] + obs_hdus)
+        # save all extensions
+        hdulist = _fits.HDUList([primary_hdu, photon_hdu] + obs_hdus)
         hdulist.writeto(path, clobber=overwrite)
 
 
@@ -285,16 +285,20 @@ class Photons:
         obj.photons = _tbl.Table(tbl_cols)
 
         # parse observation time and wavelength ranges
-        info = hdulist[2].data
-        obs_nos = info[_name_dict['n']]
-        def parse_info(col0, col1):
-            ary = _np.array([info[col0], info[col1]]).T
-            return [ary[obs_nos == i, :] for i in range(obs_nos.max())]
-        obj.obs_bandpasses = parse_info('bandpas0', 'bandpas1')
-        obj.obs_times = parse_info('start', 'stop')
+        def parse_bands_and_time(extension):
+            bandpas0, bandpas1, start, stop = [extension.data[s] for s in ['bandpas0', 'bandpas1', 'start', 'stop']]
+            bands = _np.array([bandpas0, bandpas1]).T
+            times = _np.array([start, stop]).T
+            return bands, times
 
         # parse observation metadata
-        obj.obs_metadata = [hdu.header for hdu in hdulist[3:]]
+        obj.obs_metadata = [hdu.header for hdu in hdulist[2:]]
+
+        # parse times and bands
+        pairs = map(parse_bands_and_time, hdulist[2:])
+        bands, times = zip(*pairs)
+        obj.obs_times = times
+        obj.obs_bandpasses = bands
 
         return obj
 
@@ -364,7 +368,7 @@ class Photons:
             self.photons.add_column(n_col)
 
 
-    def divvy(self, ysignal, yback=[]):
+    def divvy(self, ysignal, yback=[], order=None):
         """
         Provides a simple means of divyying photons into signal and background regions (and adding/updating the
         associated 'r' column, by specifying limits of these regions in the y coordinate.
@@ -390,18 +394,22 @@ class Photons:
         # join the edges into one list
         edges, isignal, iback, area_ratio = self._get_ribbon_edges(ysignal, yback)
 
+        # deal just with the photons of appropriate order
+        filter = _np.ones(len(self), bool) if order is None else self['o']
+
         # determine which band counts are in
-        ii = _np.searchsorted(edges, self['y'])
+        ii = _np.searchsorted(edges, self['y'][filter])
 
         # add/modify weights in 'r' column
         # TRADE: sacrifice memory with a float weights column versus storing the area ratio and just using integer
         # flags because this allows better flexibility when combining photons from multiple observations
-        self['r'] = _np.zeros_like(self['e']) if 'e' in self else _np.zeros(len(self), 'f4')
+        if 'r' not in self:
+            self['r'] = _np.zeros_like(self['e']) if 'e' in self else _np.zeros(len(self), 'f4')
         signal = reduce(_np.logical_or, [ii == i for i in isignal])
-        self['r'][signal] = 1.0
+        self['r'][signal & filter] = 1.0
         if len(yback) > 0:
             bkgnd = reduce(_np.logical_or, [ii == i for i in iback])
-            self['r'][bkgnd] = -area_ratio
+            self['r'][filter & bkgnd] = -area_ratio
 
 
     def squish(self, keep='both'):
