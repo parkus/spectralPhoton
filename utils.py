@@ -48,6 +48,33 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     bin_edges_ds, density_ds, error_ds
     """
 
+    bin_edges, density, error = map(_np.asarray, [bin_edges, density, error])
+    # if multiple spectra are to be downsampled and the coarsetst allowabel resolution kept...
+    if density.ndim > 1:
+        assert len(bin_edges) == len(density) == len(error)
+
+        # downsample each spectrum
+        results = [adaptive_downsample(be, d, e) for be, d, e in zip(bin_edges, density, error)]
+        edgelist, densitylist, errlist = zip(*results)
+
+        # combine the downsampled edges to ensure that each spectrum will exceed the min SN if rebinned using the
+        # combined edges
+        edges_ds = max([edges[0] for edges in edgelist])
+        end = min([edges[-1] for edges in edgelist])
+        while edges_ds[-1] < end:
+            edgelist = [edges[edges > edges_ds[-1]] for edges in edgelist]
+            next_edge = max([edges[0] for edges in edgelist])
+            edges_ds.append(next_edge)
+        if edges_ds > end:
+            edges_ds[-1] = end
+        edges_ds = _np.array(edges_ds)
+
+        # rebin each spectrum to the combined downsampled bins
+        results = [rebin(edges_ds, s, d, e) for s, d, e in zip(bin_edges, density, error)]
+        densitylist, errlist = zip(*results)
+        return edges_ds, densitylist, errlist
+
+
     # convert bin density to bin value
     lo, hi = bin_edges[:-1].copy(), bin_edges[1:].copy()
     d = _np.diff(bin_edges)
@@ -98,6 +125,7 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     bin_edges_ds = _np.append(lo, hi[-1])
     return bin_edges_ds, density_ds, error_ds
 
+
 def rebin(new_edges, old_edges, density, error=None):
 
     # get overlapping bins, warn if some don't overlap
@@ -146,3 +174,5 @@ def rebin(new_edges, old_edges, density, error=None):
         return density_new, error_new
     else:
         return density_new
+
+
