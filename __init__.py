@@ -8,10 +8,22 @@ import numpy as _np
 # import mypy.my_numpy as mynp
 
 
-_format_dict = {'uint8':'B', 'int8':'I', 'int16':'I', 'uint16':'J',  'int32':'J', 'int64':'K', 'float32':'E', 
-                'float64':'D'}
-_dtype_keys = map(_np.dtype, _format_dict.keys())
-_format_dict = dict(zip(_dtype_keys, _format_dict.values()))
+def _FITSformat(dtype):
+    dstr = str(dtype)
+    dstr = dstr.replace('>', '')
+    if dstr in ['uint8']:
+        return 'B'
+    if dstr in ['int8', 'i1', 'int16']:
+        return 'I'
+    if dstr in ['uint16', 'int32', 'i2', 'i4']:
+        return 'J'
+    if dstr in ['uint32', 'int64', 'i8']:
+        return 'K'
+    if dstr in ['float32', 'f4']:
+        return 'E'
+    if dstr in ['float64', 'f8']:
+        return 'D'
+    raise ValueError('Not sure waht to do with the {} data type.'.format(dstr))
 _name_dict = {'t':'time', 'w':'wavelength', 'y':'xdisp', 'a':'area_eff', 'q':'qualflag', 'o':'order', 'n':'obs_no',
               'e':'wght', 'r':'rgn_wght'}
 
@@ -213,7 +225,7 @@ class Photons:
         for colname in self.photons.colnames:
             tbl_col = self[colname]
             name = _name_dict.get(colname, colname)
-            format = _format_dict[tbl_col.dtype]
+            format = _FITSformat(tbl_col.dtype)
             fits_col = _fits.Column(name=name, format=format, array=tbl_col.data, unit=str(tbl_col.unit))
             photon_cols.append(fits_col)
         photon_hdr = _fits.Header()
@@ -266,7 +278,7 @@ class Photons:
         """
 
         # create an empty Photons object
-        obj = cls()
+        obj = Photons()
 
         # open file
         hdulist = _fits.open(path)
@@ -726,7 +738,7 @@ class Photons:
         -------
         T : float
         """
-        obs_times = _np.vstack(self.obs_times)
+        obs_times = self.clean_obs_times()
         return _np.sum(obs_times[:, 1] - obs_times[:, 0])
 
 
@@ -783,6 +795,37 @@ class Photons:
 
         return t
 
+
+    def clean_obs_times(self):
+        # stack and sort all of the time ranges
+        obs_times = _np.vstack(self.obs_times)
+        isort = _np.argsort(obs_times[:,0])
+
+        # loop through dealing with overlap when it occurs
+        clean_times = [obs_times[0]]
+        for rng in obs_times[1:]:
+            last = clean_times[-1][-1]
+
+            # if rng overlaps with the end of the last range
+            if rng[0] < last:
+                # extend the the last range if rng extends beyond its end, otherwise rng is completely overlapped and
+                #  can be discarded
+                if rng[-1] > last:
+                    clean_times[-1][-1] = rng[-1]
+            else:
+                clean_times.append(rng)
+
+        return _np.vstack(clean_times)
+
+
+    def abstime(self, t):
+        if hasattr(t, 'unit'):
+            t = t.to(_u.s)
+        else:
+            t = t * self['t'].unit
+            t = t.to(_u.s)
+        t = _time.TimeDelta(t.value, format='sec')
+        return self.time_datum + t
 
 
 
@@ -939,7 +982,8 @@ class Photons:
         dt = time_step
         edges, valid = [], []
         marker = 0
-        for rng in _np.vstack(self.obs_times):
+
+        for rng in self.clean_obs_times():
             # adjust range to fit time_range if necessary
             if rng[0] >= time_range[1] or rng[1] <= time_range[0]:
                 continue
@@ -969,7 +1013,7 @@ class Photons:
 
             # add bins to the list
             edges.extend(obs_bins)
-            valid.extend(range(len(obs_bins)-1))
+            valid.extend(range(marker, marker+len(obs_bins)-1))
             marker += len(obs_bins)
 
         return map(_np.array, [edges, valid])
@@ -1063,10 +1107,6 @@ class Photons:
         errors = _np.sqrt(variances)
 
         return counts, errors
-
-
-
-
 
 
 
