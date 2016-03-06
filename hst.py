@@ -304,8 +304,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     # convert everything to integers so we can make slices
     try:
         intrnd = lambda x: int(round(x))
-        traceloc, extrsize, bksize, bkoff = map(intrnd, [traceloc, extrsize,
-                                                         bksize, bkoff])
+        traceloc, extrsize, bksize, bkoff = map(intrnd, [traceloc, extrsize, bksize, bkoff])
     except ValueError:
         raise ValueError("Invalid input for either traceloc, extrsize, bksize, "
                          "or bkoff. See docstring.")
@@ -501,6 +500,51 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
     xdisp, order = map(_np.hstack, [xdisp_list, order_list])
 
     return xdisp, order
+
+
+def rectify_g140m(g140mtag):
+    if type(g140mtag) is str:
+        g140mtag = _fits.open(g140mtag)
+    x, y = [g140mtag[1].data[s].astype('f4') for s in ['axis1', 'axis2']]
+
+    # add some psudo-random uniform offsets between 0 and 1 pixel to avoid aliasing
+    _np.random.seed(0) # for repeatability
+    x += _np.random.uniform(0.0, 1.0, x.shape).astype('f4')
+    y += _np.random.uniform(0.0, 1.0, y.shape).astype('f4')
+
+    # bin to an image
+    edges = _np.arange(2049) # makes 2048 bins, I verified that STScI does index the pixels from 0
+    img, xe, ye = _np.histogram2d(x, y, bins=[edges]*2)
+
+    # identify iarglow by finding maxima of each row of pixels in x direction
+    x_mx = _np.argmax(img, axis=0)
+    count_mx = img[x_mx,range(2048)]
+
+    # fit a line to the airglow line, weighting by counts (amounts to weighting by S/N)
+    ymids = (edges[:-1] + edges[1:])/2.0
+    dxdy, x0 = _np.polyfit(ymids, x_mx, 1, w=count_mx)
+
+    # rotate all tags to make airglow line vertical
+    angle = _np.arctan(dxdy)
+    c, s = _np.cos, _np.sin
+    rotation_matrix = [[c(angle), -s(angle)],
+                       [s(angle), c(angle)]]
+    xr, yr = _np.dot(rotation_matrix, [x,y])
+
+    # rotate x0 to get rotated coordinate of airglow center
+    x0r, _ = _np.dot(rotation_matrix, [x0, 0.0])
+
+    # use mean of events within 3 pixels (~0.08  AA) of x0 to get a better estiamte of airglow center
+    # doesn't actually change things much, but whatever
+    use = abs(xr - x0r) < 3
+    x_airglow = _np.mean(xr[use])
+
+    # use spectral scale in tagfile and airglow cetner to assign wavelengths to events
+    w0 = 1215.67
+    dwdx = g140mtag[1].header['tc2_2']
+    w = w0 + (xr - x_airglow)*dwdx
+
+    return xr,yr,w
 
 
 def _get_Aeff(photons, x1d, x1d_row, order, method='x1d_only'):
