@@ -146,5 +146,3 @@ def rebin(new_edges, old_edges, density, error=None):
         return density_new, error_new
     else:
         return density_new
-
-
