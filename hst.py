@@ -167,7 +167,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             Aeff = _np.zeros_like(photons['t'])
             for i in segments:
-                Aeff_i = _get_Aeff(photons, x1d, x1d_row=i, order=i, method=fluxed)
+                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row=i, order=i, method=fluxed)
                 Aeff[photons['o'] == i] = Aeff_i
 
             photons['a'] = Aeff
@@ -191,7 +191,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             Aeff = _np.zeros_like(photons['t'])
             for x1d_row, order in zip(range(Norders), order_nos):
-                Aeff_i = _get_Aeff(photons, x1d, x1d_row, order, method=fluxed)
+                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row, order, method=fluxed)
                 Aeff[photons['o'] == order] = Aeff_i
 
             photons['a'] = Aeff
@@ -201,8 +201,8 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
                                   ''.format(hdr['instrume']))
 
     # cull photons outside of wavelength and time ranges
-    keep_w = _sp._inbins(wave_ranges, photons['w'])
-    keep_t = _sp._inbins(time_ranges, photons['t'])
+    keep_w = (photons['w'] >= wave_ranges[0,0]) & (photons['w'] <= wave_ranges[0,-1])
+    keep_t = (photons['t'] >= time_ranges[0,0]) & (photons['t'] <= time_ranges[0,-1])
     photons.photons = photons.photons[keep_w & keep_t]
 
     # add appropriate units
@@ -350,9 +350,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     q1d = qsig | qbk0 | qbk1
 
     # construct wavelength array
-    xref, wref, dwdx = [x2d['sci'].header[s] for s in ['crpix1', 'crval1', 'cd1_1']]
-    x = _np.arange(f.shape[0] + 1)
-    wedges = wref + (x - xref + 0.5) * dwdx
+    wedges = _get_x2d_waveedges(x2d)
     w0, w1 = wedges[:-1], wedges[1:]
 
     # construct exposure time array
@@ -547,7 +545,93 @@ def rectify_g140m(g140mtag):
     return xr,yr,w
 
 
-def _get_Aeff(photons, x1d, x1d_row, order, method='x1d_only'):
+def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=300, bksize=10):
+
+    tag = _fits.open(g140mtagfile)
+
+    # straighten things up so that the ariglow line is vertical and use the airglwo to calibrate wavelength
+    xr, yr, w = rectify_g140m(tag)
+
+    # now find the lya by looking for the peak redward of the airglow
+    redwing = (w > 1215.8) & (w < 1216.2)
+    counts, bin_eedges = _np.histogram(yr[redwing], bins=2100)
+    bins_mids = (bin_eedges[:-1] + bin_eedges[1:])/2.0
+    yspec = bins_mids[_np.argmax(counts)]
+
+    # compute event distances from spectrum line
+    xdisp = yr - yspec
+
+    # make a phtons object using readtag and just replace w and y
+    photons = readtag(g140mtagfile, None, traceloc=0.0, divvied=False, fluxed=False)
+    photons['y'] = xdisp
+    photons['w'] = w
+
+    # divvy the photons
+    ysignal = [[-extrsize/2.0, extrsize/2.0]]
+    dback = _np.array([-bksize/2.0, bksize/2.0])
+    yback = _np.hstack([-bkoff+dback, bkoff+dback])
+    photons.divvy(ysignal, yback)
+
+    # if x2d file present, bin tags the same as x2d and compare to get fluxes
+    if x2dfile is not None:
+        x2d = _fits.open(x2dfile)
+        photons['a'] = _get_Aeff_x2d(photons, x2d)
+        photons['a'].unit = _u.cm**2
+
+    return photons
+
+
+def _get_Aeff_x2d(photons, x2d):
+        # get wavelength edges of x2d pixels
+        w_bins = _get_x2d_waveedges(x2d)
+
+        # get position of spectrum in y
+        spec_pixel = x2d[1].header['crpix2']
+
+        # create appropriate ybins centered on yspec of tags with the same number of bins above and below as x2d
+        n = x2d[1].data.shape[0]
+        n_below = spec_pixel
+        y_below = 3 - n_below*2
+        y_above = y_below + 2*n
+        y_bins = _np.arange(y_below, y_above + 2, 2)
+
+        # create an equivalently-binned image from the counts
+        counts = _np.histogram2d(photons['y'], photons['w'], bins=[y_bins, w_bins])[0]
+
+        # take ratio with x2d flux and diffuse to point correction to get effextive area within each pixel
+        diff2pt, expt = [x2d[1].header[s] for s in ['diff2pt', 'exptime']]
+        flux = x2d[1].data * diff2pt
+        wmids = (w_bins[:-1] + w_bins[1:])/2.0
+        dw = _np.diff(w_bins)
+        photon_energy = _const.h*_const.c/(wmids * _u.AA)
+        photon_energy = photon_energy.to(_u.erg).value
+        Aeff = photon_energy[_np.newaxis, :]*counts/(flux*dw[_np.newaxis, :]*expt)
+
+        # interpolate any values that aren't a positive real number (e.g. where the x2d flux was zero, counts were
+        # zero, etc.).
+        valid = _np.isfinite(Aeff) & (Aeff > 0)
+        ymids = (y_bins[:-1] + y_bins[1:])/2.0
+        ygrid, wgrid = _np.meshgrid(ymids, wmids)
+        spline = _interp.SmoothBivariateSpline(ygrid[valid], wgrid[valid], Aeff[valid])
+        Aeff[~valid] = spline(ygrid[~valid], wgrid[~valid], grid=False)
+
+        # interpolate the effective areas
+        i = _np.searchsorted(w_bins, photons['w'])
+        j = _np.searchsorted(y_bins, photons['y'])
+
+        # apparently numpy has trouble with massive indexing? I'll split this into chunkcs
+        chunksize = 50000
+        chunk_indices = range(0, len(photons), chunksize)
+        a_list = []
+        for start in chunk_indices:
+            ii = i[start:start+chunksize]
+            jj = j[start:start+chunksize]
+            a_list.append(Aeff[ii,jj])
+
+        return _np.hstack(a_list)
+
+
+def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only'):
     """
 
     Parameters
@@ -974,6 +1058,13 @@ def obs_files(directory):
 
 def _argsegment(x1d, segment):
     return  _np.nonzero(x1d['segment'] == segment)[0]
+
+# TODO: check this using GJ 581 muscles i data
+def _get_x2d_waveedges(x2d):
+    xref, wref, dwdx = [x2d['sci'].header[s] for s in ['crpix1', 'crval1', 'cd1_1']]
+    x = _np.arange(x2d[1].data.shape[0] + 1)
+    wedges = wref + (x - xref + 0.5) * dwdx
+    return wedges
 
 
 _iscos = lambda hdu: hdu[0].header['instrume'] == 'COS'
