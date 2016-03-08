@@ -49,36 +49,20 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     """
 
     bin_edges, density, error = map(_np.asarray, [bin_edges, density, error])
-    # if multiple spectra are to be downsampled and the coarsetst allowabel resolution kept...
-    if density.ndim > 1:
-        assert len(bin_edges) == len(density) == len(error)
 
-        # downsample each spectrum
-        results = [adaptive_downsample(be, d, e, min_SN) for be, d, e in zip(bin_edges, density, error)]
-        edgelist, densitylist, errlist = zip(*results)
-
-        # combine the downsampled edges to ensure that each spectrum will exceed the min SN if rebinned using the
-        # combined edges
-        edges_ds = [max([edges[0] for edges in edgelist])]
-        end = min([edges[-1] for edges in edgelist])
-        while edges_ds[-1] < end:
-            edgelist = [edges[edges > edges_ds[-1]] for edges in edgelist]
-            next_edge = max([edges[0] for edges in edgelist])
-            edges_ds.append(next_edge)
-        if edges_ds[-1] > end:
-            edges_ds[-1] = end
-        edges_ds = _np.array(edges_ds)
-
-        # rebin each spectrum to the combined downsampled bins
-        results = [rebin(edges_ds, s, d, e) for s, d, e in zip(bin_edges, density, error)]
-        densitylist, errlist = zip(*results)
-        return edges_ds, densitylist, errlist
-
+    # assume multiple spectra are present. if not reshape two have two dimensions
+    if density.ndim == 1:
+        bin_edges, density, error = [_np.reshape(a, [1, None]) for a in bin_edges, density, error]
+    else:
+        assert len(density) == len(error)
+        if bin_edges.ndim > 1:
+            raise NotImplementedError('Can\'t handle different bin edges for each spectrum/ If they\'re all the same, '
+                                      'just give a 1D array specifiying the bin edges for each spectrum.')
 
     # convert bin density to bin value
     lo, hi = bin_edges[:-1].copy(), bin_edges[1:].copy()
     d = _np.diff(bin_edges)
-    y, e = density*d, error*d
+    y, e = density*d[_np.newaxis, :], error*d[_np.newaxis, :]
     v = e**2 # variance
 
     # iteratively add pairs of bins with their neighbors (alternating which neighbor)
@@ -88,7 +72,8 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
         low_SN = y/e < min_SN
         if not _np.any(low_SN) or len(y) <= 1:
             break
-        i_low_SN, = _np.where(low_SN)
+        low_SN_cols = reduce(_np.logical_or, low_SN, _np.zeros(low_SN.shape[1], bool))
+        i_low_SN, = _np.where(low_SN_cols)
 
         # remove any adjacent low S/N bins or else the flux will be double-counted using the vector operations below
         adjacent = _np.zeros_like(i_low_SN, bool)
@@ -100,7 +85,7 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
         # now sum pairs of bins
         if forward:
             # if the last pt is flagged, forget it for this iteration
-            if i_low_SN[-1] == len(y) - 1:
+            if i_low_SN[-1] == y.shape[1] - 1:
                 i_low_SN = i_low_SN[:-1]
             sum_i = i_low_SN + 1
             hi[i_low_SN] = hi[sum_i]
@@ -110,11 +95,12 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
                 i_low_SN = i_low_SN[1:]
             sum_i = i_low_SN - 1
             lo[i_low_SN] = lo[sum_i]
-        y[i_low_SN] += y[sum_i]
-        v[i_low_SN] += v[sum_i]
+        y[:, i_low_SN] += y[:, sum_i]
+        v[:, i_low_SN] += v[:, sum_i]
 
         # and delete one of the pair that have been summed
-        lo, hi, y, v = [_np.delete(a, sum_i) for a in [lo, hi, y, v]]
+        lo, hi = [_np.delete(a, sum_i) for a in [lo, hi]]
+        y, v = [_np.delete(a, sum_i, axis=1) for a in [y, v]]
         e = _np.sqrt(v)
 
         # and flip the forward switch so next iteration neighbors to the other side will be used
@@ -124,6 +110,10 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     d_ds = hi - lo
     density_ds, error_ds = y/d_ds, _np.sqrt(v)/d_ds
     bin_edges_ds = _np.append(lo, hi[-1])
+
+    # remove extra dimensions (i.e. if only a single spectrum was used)
+    density_ds, error_ds = map(_np.squeeze, [density_ds, error_ds])
+
     return bin_edges_ds, density_ds, error_ds
 
 
