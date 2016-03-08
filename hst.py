@@ -545,7 +545,7 @@ def rectify_g140m(g140mtag):
     return xr,yr,w
 
 
-def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=300, bksize=10):
+def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bksize=10):
 
     tag = _fits.open(g140mtagfile)
 
@@ -574,61 +574,54 @@ def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=300, bks
 
     # if x2d file present, bin tags the same as x2d and compare to get fluxes
     if x2dfile is not None:
-        x2d = _fits.open(x2dfile)
-        photons['a'] = _get_Aeff_x2d(photons, x2d)
-        photons['a'].unit = _u.cm**2
+        spec2 = x2dspec(x2dfile, traceloc='lya', extrsize=extrsize/2, bkoff=bkoff/2, bksize=bksize/2, bkmask=False)
+        good_pixels = _np.bitwise_and(spec2['dq'], 4) == 0
+        beg, end = _np.nonzero(good_pixels)[0][[0,-1]]
+        spec2 = spec2[beg:end+1]
+        w_bins = _np.append(spec2['w0'], spec2['w1'][-1])
+        photons['a'] = _get_Aeff_compare(photons, w_bins, spec2['flux'], spec2['error'])
+        photons['a'].unit = _u.erg
 
     return photons
 
 
-def _get_Aeff_x2d(photons, x2d):
-        # get wavelength edges of x2d pixels
-        w_bins = _get_x2d_waveedges(x2d)
+def _get_Aeff_compare(photons_or_cps, bin_edges, flux, error, order='all'):
 
-        # get position of spectrum in y
-        spec_pixel = x2d[1].header['crpix2']
+    if isinstance(photons_or_cps, _sp.Photons):
+        photons = photons_or_cps
 
-        # create appropriate ybins centered on yspec of tags with the same number of bins above and below as x2d
-        n = x2d[1].data.shape[0]
-        n_below = spec_pixel
-        y_below = 3 - n_below*2
-        y_above = y_below + 2*n
-        y_bins = _np.arange(y_below, y_above + 2, 2)
+        if 'r' not in photons:
+            raise ValueError('Photons must have region information (signal/background) for tag_vs_x1d fluxing.')
 
-        # create an equivalently-binned image from the counts
-        counts = _np.histogram2d(photons['y'], photons['w'], bins=[y_bins, w_bins])[0]
+        # get count rate spectrum using the x1d wavelength edges
+        cps_density, cps_error = photons.spectrum(bin_edges, order=order)[2:4]
 
-        # take ratio with x2d flux and diffuse to point correction to get effextive area within each pixel
-        diff2pt, expt = [x2d[1].header[s] for s in ['diff2pt', 'exptime']]
-        flux = x2d[1].data * diff2pt
-        wmids = (w_bins[:-1] + w_bins[1:])/2.0
-        dw = _np.diff(w_bins)
-        photon_energy = _const.h*_const.c/(wmids * _u.AA)
-        photon_energy = photon_energy.to(_u.erg).value
-        Aeff = photon_energy[_np.newaxis, :]*counts/(flux*dw[_np.newaxis, :]*expt)
+        # adaptively rebin both spectra to have min S/N of 2.0 with the same bins for each
+        bin_edges_ds, densities, errors = _utils.adaptive_downsample(bin_edges, [flux, cps_density],
+                                                                     [error, cps_error], 2.0)
 
-        # interpolate any values that aren't a positive real number (e.g. where the x2d flux was zero, counts were
-        # zero, etc.).
-        valid = _np.isfinite(Aeff) & (Aeff > 0)
-        ymids = (y_bins[:-1] + y_bins[1:])/2.0
-        ygrid, wgrid = _np.meshgrid(ymids, wmids)
-        spline = _interp.SmoothBivariateSpline(ygrid[valid], wgrid[valid], Aeff[valid])
-        Aeff[~valid] = spline(ygrid[~valid], wgrid[~valid], grid=False)
+        flux, cps_density = densities
 
-        # interpolate the effective areas
-        i = _np.searchsorted(w_bins, photons['w'])
-        j = _np.searchsorted(y_bins, photons['y'])
+        # I want counts for the computation below not count density
+        w = (bin_edges_ds[:-1] + bin_edges_ds[1:])/2.0
+        dw = _np.diff(bin_edges_ds)
+        cps = cps_density*dw
+    else:
+        dw = _np.diff(bin_edges)
 
-        # apparently numpy has trouble with massive indexing? I'll split this into chunkcs
-        chunksize = 50000
-        chunk_indices = range(0, len(photons), chunksize)
-        a_list = []
-        for start in chunk_indices:
-            ii = i[start:start+chunksize]
-            jj = j[start:start+chunksize]
-            a_list.append(Aeff[ii,jj])
+    # compare count rate to x1d flux to compute effective area grid
+    avg_energy = _const.h*_const.c / (w * _u.AA)  # not quite right but fine for dw/w << 1
+    avg_energy = avg_energy.to('erg').value
+    Aeff_grid =  cps*avg_energy/(dw*flux)
 
-        return _np.hstack(a_list)
+    # interpolate the effective areas at the photon wavelengths
+    if order == 'all':
+        in_order = slice(None)
+    else:
+        in_order = (photons['o'] == order)
+    Aeff = _np.interp(photons['w'][in_order], w, Aeff_grid)
+
+    return Aeff
 
 
 def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only'):
@@ -651,72 +644,14 @@ def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only'):
     w, cps, flux, error = [x1d[1].data[s][x1d_row] for s in ['wavelength', 'net', 'flux', 'error']]
 
     # estimate wavelength bin edges
-    edges = _utils.wave_edges(w)
-
-    # keep only the data in the observation ranges
-    keep = (edges[:-1] >= photons.obs_bandpasses[0][0,0]) & (edges[1:] <= photons.obs_bandpasses[0][0,1])
-    w, cps, flux, error = [a[keep] for a in [w, cps, flux, error]]
-    edges = _np.append(edges[:-1][keep], edges[1:][keep][-1])
-
-    # wavelength bin widths
-    dw = _np.diff(edges)
+    w_bins = _utils.wave_edges(w)
 
     if method == 'x1d_only':
-        # compare net count rate to flux to compute effective area vs pixel, ignoring zero-flux pixels
-        keep = (cps != 0)
-        flux, cps, dw, w = [v[keep] for v in [flux, cps, dw, w]]
-
+        Aeff = _get_Aeff_compare(cps, w_bins, flux, error, order)
     elif method == 'tag_vs_x1d':
-
-        if 'r' not in photons:
-            raise ValueError('Photons must have region information (signal/background) for tag_vs_x1d fluxing.')
-
-        # downsample the x1d until bins all have a S/N of at least 2. otherwise for low-signal spectra there will be
-        # many bins where the effective area is computed to be negative
-        x_edges_ds = _utils.adaptive_downsample(edges, flux, error, 2.0)[0]
-
-        # get count rate spectrum using the x1d wavelength edges
-        cps_density, cps_error = photons.spectrum(edges, order=order)[2:4]
-
-        # downsample count rate spectrum
-        cps_edges_ds = _utils.adaptive_downsample(edges, cps_density, cps_error, 2.0)[0]
-
-        # keep coarsest bins from either spectrum. this is ugly and slow, sorry
-        edges_ds = [edges[0]]
-        i, j = 1, 1
-        while edges_ds[-1] < edges[-1]:
-            if x_edges_ds[i] > cps_edges_ds[j]:
-                edges_ds.append(x_edges_ds[i])
-                i += 1
-                while cps_edges_ds[j] < edges_ds[-1]:
-                    j += 1
-            else:
-                edges_ds.append(cps_edges_ds[j])
-                j += 1
-                while x_edges_ds[i] < edges_ds[-1]:
-                    i += 1
-        edges_ds = _np.array(edges_ds)
-
-        # rebin x1d flux and tag count rates to coarse (downsampled, ds) binning
-        flux = _utils.rebin(edges_ds, edges, flux)
-        cps_density = _utils.rebin(edges_ds, edges, cps_density)
-
-        # I want counts for the computation below not count density
-        w = (edges_ds[:-1] + edges_ds[1:])/2.0
-        dw = _np.diff(edges_ds)
-        cps = cps_density*dw
-
+        Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order)
     else:
         raise ValueError('fluxmethod not recognized.')
-
-    # compare count rate to x1d flux to compute effective area grid
-    avg_energy = _const.h*_const.c / (w * _u.AA)  # not quite right but fine for dw/w << 1
-    avg_energy = avg_energy.to('erg').value
-    Aeff_grid =  cps*avg_energy/(dw*flux)
-
-    # interpolate the effective areas at the photon wavelengths
-    in_order = (photons['o'] == order)
-    Aeff = _np.interp(photons['w'][in_order], w, Aeff_grid)
 
     return Aeff
 
@@ -1059,7 +994,7 @@ def obs_files(directory):
 def _argsegment(x1d, segment):
     return  _np.nonzero(x1d['segment'] == segment)[0]
 
-# TODO: check this using GJ 581 muscles i data
+
 def _get_x2d_waveedges(x2d):
     xref, wref, dwdx = [x2d['sci'].header[s] for s in ['crpix1', 'crval1', 'cd1_1']]
     x = _np.arange(x2d[1].data.shape[0] + 1)
