@@ -54,18 +54,18 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
         assert len(bin_edges) == len(density) == len(error)
 
         # downsample each spectrum
-        results = [adaptive_downsample(be, d, e) for be, d, e in zip(bin_edges, density, error)]
+        results = [adaptive_downsample(be, d, e, min_SN) for be, d, e in zip(bin_edges, density, error)]
         edgelist, densitylist, errlist = zip(*results)
 
         # combine the downsampled edges to ensure that each spectrum will exceed the min SN if rebinned using the
         # combined edges
-        edges_ds = max([edges[0] for edges in edgelist])
+        edges_ds = [max([edges[0] for edges in edgelist])]
         end = min([edges[-1] for edges in edgelist])
         while edges_ds[-1] < end:
             edgelist = [edges[edges > edges_ds[-1]] for edges in edgelist]
             next_edge = max([edges[0] for edges in edgelist])
             edges_ds.append(next_edge)
-        if edges_ds > end:
+        if edges_ds[-1] > end:
             edges_ds[-1] = end
         edges_ds = _np.array(edges_ds)
 
@@ -114,7 +114,8 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
         v[i_low_SN] += v[sum_i]
 
         # and delete one of the pair that have been summed
-        lo, hi, y, v, e = [_np.delete(a, sum_i) for a in [lo, hi, y, v, e]]
+        lo, hi, y, v = [_np.delete(a, sum_i) for a in [lo, hi, y, v]]
+        e = _np.sqrt(v)
 
         # and flip the forward switch so next iteration neighbors to the other side will be used
         forward = not forward
