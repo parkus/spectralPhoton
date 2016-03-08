@@ -4,6 +4,7 @@ import astropy.table as _tbl
 import astropy.units as _u
 import astropy.constants as _const
 import numpy as _np
+import matplotlib.pyplot as plt
 
 # import mypy.my_numpy as mynp
 
@@ -454,29 +455,6 @@ class Photons:
 
     # --------
     # ANALYSIS METHODS
-    def image(self, wbins, ybins):
-        """
-
-        Parameters
-        ----------
-        wbins
-        ybins
-
-        Returns
-        -------
-        wbins, ybins, rates
-        """
-        # decided not to attempt fluxing -- for HST data this will be problematic if effective areas for the event
-        # locations aren't very carefully computed. In that case, the x2ds are the way to go. Maybe this will make
-        # sense for other applications in the future
-        weights = self['e'] if 'e' in self else None
-
-        counts, wbins, ybins = _np.histogram2d(self['w'], self['y'], bins=[wbins, ybins], weights=weights)
-        bintime = self.time_per_bin(wbins)
-        rates = counts/bintime[:, _np.newaxis]
-        return wbins, ybins, rates
-
-
     def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all'):
         """
 
@@ -707,6 +685,37 @@ class Photons:
 
     # ---------
     # UTILITIES
+    def image(self, xax, yax, bins, weighted=False, scalefunc=None, show=True):
+        """
+
+        Parameters
+        ----------
+        wbins
+        ybins
+
+        Returns
+        -------
+        wbins, ybins, rates
+        """
+        # decided not to attempt fluxing -- for HST data this will be problematic if effective areas for the event
+        # locations aren't very carefully computed. In that case, the x2ds are the way to go. Maybe this will make
+        # sense for other applications in the future
+        weights = self['e'] if ('e' in self and weighted) else None
+        counts, xbins, ybins = _np.histogram2d(self[xax], self[yax], bins=bins, weights=weights)
+
+        if type(scalefunc) in [int, float]:
+            scalefunc = lambda x: x**scalefunc
+        if scalefunc is None:
+            scaled_counts = counts
+        else:
+            scaled_counts = scalefunc(counts)
+
+        if show:
+            extent = [xbins[0], xbins[-1], ybins[0], ybins[-1]]
+            plt.imshow(scaled_counts[:,::-1].T, extent=extent, aspect='auto')
+
+        return counts, xbins, ybins
+
 
     def check_wavelength_coverage(self, bandpasses):
         """
