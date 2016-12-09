@@ -5,8 +5,8 @@ import astropy.units as _u
 import astropy.constants as _const
 import numpy as _np
 import matplotlib.pyplot as plt
-
-# import mypy.my_numpy as mynp
+import warnings
+import utils
 
 
 def _FITSformat(dtype):
@@ -126,6 +126,92 @@ class Photons:
                 self.obs_bandpasses = [_np.array([[]])]
 
 
+    def merge_like_observations(self, clip_band_overlap=False):
+        """
+        Merge observations that have the same exposure times. If their bandpasses ranges overlap, then the photons
+        in the overlap get de-weighted due to he "extra" observing time that isn't otherwise accounted for.
+
+        Returns
+        -------
+
+        """
+
+        i = 0
+        while i < len(self.obs_metadata)-1:
+            tref = self.obs_times[i]
+            same_obs = [_np.all(t == tref) for t in self.obs_times[i+1:]]
+            if _np.any(same_obs):
+                same_obs = _np.nonzero(same_obs)[0] + i + 1
+
+                bands_ref = self.obs_bandpasses[i]
+                bands = [self.obs_bandpasses[j] for j in same_obs]
+                if len(reduce(utils.rangeset_intersect, bands, bands_ref)) > 0 and not clip_band_overlap:
+                    raise ValueError('Cannot merge observations that overlap in wavlength.')
+
+                for j in same_obs:
+                    self.obs_metadata[i] += self.obs_metadata[j]
+
+                    from_obs = self.photons['n'] == j
+                    self.photons['n'][from_obs] = i
+                    from_gtr_obs = self.photons['n'] > j
+                    self.photons['n'][from_gtr_obs] -= 1
+
+                    x_bands = utils.rangeset_intersect(self.obs_bandpasses[i], self.obs_bandpasses[j])
+                    if len(x_bands) > 0:
+                        from_obs_j = from_obs
+                        from_obs_i = self.photons['n'] == i
+                        xi = utils.inranges(self.photons['w'][from_obs_i], x_bands)
+                        xj = utils.inranges(self.photons['w'][from_obs_j], x_bands)
+                        if _np.sum(xi) < _np.sum(xj):
+                            ii = _np.nonzero([from_obs_i])[0][xi]
+                            self.photons.remove_rows(ii)
+                        else:
+                            jj = _np.nonzero([from_obs_j])[0][xj]
+                            self.photons.remove_rows(jj)
+                    self.obs_bandpasses[i] = utils.rangeset_union(self.obs_bandpasses[j], self.obs_bandpasses[i])
+
+                for j in same_obs[::-1]:
+                    del self.obs_times[j], self.obs_metadata[j], self.obs_bandpasses[j]
+
+            i += 1
+
+
+    def merge_orders(self):
+        """
+        Merge overlapping orders in each observation, removing photons from the order with fewer of them where there
+        is overlap.
+
+        Returns
+        -------
+
+        """
+
+        # split into separate photons objects for each observation, and split he orders within tha observation into
+        # faux separate observations, then merge them
+        if len(self.obs_times) > 1:
+            separate = [self.get_obs(i) for i in range(len(self.obs_times))]
+        else:
+            separate = [self]
+        for obj in separate:
+            temp_meta = obj.obs_metadata
+            order_ranges = obj.obs_bandpasses[0]
+            Norders = len(order_ranges)
+            obj.obs_metadata = [0]*Norders
+            obj.obs_times *= Norders
+            obj.obs_bandpasses = [order_ranges[[i]] for i in range(len(order_ranges))]
+            obj.photons['n'] = obj.photons['o']
+            obj.photons.remove_column('o')
+            obj.merge_like_observations(clip_band_overlap=True)
+            obj.obs_metadata = temp_meta
+            obj.photons.remove_column('n')
+
+        all = sum(separate[1:], separate[0])
+        self.obs_times = all.obs_times
+        self.obs_bandpasses = all.obs_bandpasses
+        self.obs_metadata = all.obs_metadata
+        self.photons = all.photons
+
+
     def __getitem__(self, key):
         key = self._get_proper_key(key)
         return self.photons[key]
@@ -233,7 +319,6 @@ class Photons:
         photon_hdr['zerotime'] = (self.time_datum.jd, 'julian date of time = 0.0')
         photon_hdu = _fits.BinTableHDU.from_columns(photon_cols, header=photon_hdr)
 
-
         # save obs metadata, time ranges, bandpasses to additional extensions
         obs_hdus = []
         for meta, times, bands in zip(self.obs_metadata, self.obs_times, self.obs_bandpasses):
@@ -253,8 +338,8 @@ class Photons:
             arys = [bandpas0, bandpas1, start, stop]
             names = ['bandpas0', 'bandpas1', 'start', 'stop']
             units = [str(self['w'].unit)]*2 + [str(self['t'].unit)]*2
-            formats = ['D']*4
-            info_cols = [_fits.Column(array=a, name=n, unit=u, format=fmt)
+            formats = ['{}D'.format(len(a)) for a in arys]
+            info_cols = [_fits.Column(array=a.reshape([1,-1]), name=n, unit=u, format=fmt)
                          for a,n,u,fmt in zip(arys, names, units, formats)]
 
             hdu = _fits.BinTableHDU.from_columns(info_cols, header=meta)
@@ -301,8 +386,10 @@ class Photons:
         # parse observation time and wavelength ranges
         def parse_bands_and_time(extension):
             bandpas0, bandpas1, start, stop = [extension.data[s] for s in ['bandpas0', 'bandpas1', 'start', 'stop']]
-            bands = _np.array([bandpas0, bandpas1]).T
-            times = _np.array([start, stop]).T
+            bands = _np.vstack([bandpas0, bandpas1]).T
+            times = _np.vstack([start, stop]).T
+            bands.reshape(-1,2)
+            times = times.reshape(-1,2)
             return bands, times
 
         # parse observation metadata
@@ -365,6 +452,8 @@ class Photons:
             if key in other.photons.colnames:
                 if other[key].unit:
                     unit = other[key].unit
+                    if str(unit).lower() == 'none' and str(self[key].unit).lower() == 'none':
+                        continue
                     self[key].convert_unit_to(unit)
 
 
@@ -553,7 +642,8 @@ class Photons:
         time_step
         bandpasses
         time_range
-        bin_method
+        bin_method:
+            elastic, full, or partial
         fluxed
         energy_units
 
@@ -562,11 +652,16 @@ class Photons:
         bin_start, bin_stop, bin_midpts, rates, errors
         """
 
+        # check that at least some observations cover the input
+        covered = self.check_wavelength_coverage(bandpasses)
+        if not _np.any(covered):
+            raise ValueError('None of the observations cover the provided bandpasses.')
+
         # construct time bins. this is really where this method is doing a lot of work for the user in dealing with
         # the exposures and associated gaps
-        edges, valid_bins = self._construct_time_bins(time_step, bin_method, time_range)
+        edges, valid_bins = self._construct_time_bins(time_step, bin_method, time_range, bandpasses)
 
-        inbands = self._bandpass_filter(bandpasses)
+        inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
         # histogram the counts
         counts, errors = self._histogram('t', edges, time_range, fluxed, energy_units, filter=inbands)
@@ -584,10 +679,15 @@ class Photons:
         # bin midpoints
         bin_midpts = (bin_start + bin_stop)/2.0
 
+        # replace any zero errors with minimum error
+        zero_err = (errors == 0)
+        errors[zero_err] = _np.min(errors[~zero_err])
+
         return bin_start, bin_stop, bin_midpts, rates, errors
 
 
-    def lightcurve_smooth(self, n, bandpasses, time_range=None, fluxed=False, energy_units='erg'):
+    def lightcurve_smooth(self, n, bandpasses, time_range=None, fluxed=False, energy_units='erg', nan_between=False,
+                          independent=False):
         """
 
         Parameters
@@ -597,11 +697,22 @@ class Photons:
         time_range
         fluxed
         energy_units
+        nan_between
+            Add NaN points between each observation. Useful; for plotting because it breaks the plotted line between
+            exposures.
+        independent :
+            Return only ever nth point in each exposure such that the points are statistically independent.
 
         Returns
         -------
         bin_start, bin_stop, bin_midpt, rates, error
         """
+        # FIXME there is a bug where fluxing doesn't work when time range is set
+
+        # check that at least some observations cover the input
+        covered = self.check_wavelength_coverage(bandpasses)
+        if not _np.any(covered):
+            raise ValueError('None of the observations cover the provided bandpasses.')
 
         # get pertinent photon info
         weights = self._full_weights(fluxed, energy_units)
@@ -609,7 +720,7 @@ class Photons:
         obs = self['n'] if 'n' in self else _np.zeros(len(t), bool)
 
         # which photons are in wavelength bandpasses
-        inbands = self._bandpass_filter(bandpasses)
+        inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
         # which photons are in specified time range
         in_time_range = self._in_range('t', time_range)
@@ -620,14 +731,22 @@ class Photons:
         # filter superfluous photons
         keep = inbands & in_time_range & countable
         t, obs, weights = [a[keep] for a in [t, obs, weights]]
+        isort = _np.argsort(t)
+        t, obs, weights = [a[isort] for a in [t, obs, weights]]
 
         curves =[] # each curve in list will have bin_start, bin_stop, bin_midpts, rates, error
         for i in range(len(self.obs_metadata)):
             from_obs_i = (obs == i)
-            if _np.sum(from_obs_i) < n:
-                continue
-            curves.append(_smooth_boilerplate(t[from_obs_i], weights[from_obs_i], n, time_range))
-
+            _t, _weights = t[from_obs_i], weights[from_obs_i]
+            for rng in self.obs_times[i]:
+                inrng = (_t > rng[0]) & (_t < rng[1])
+                if _np.sum(inrng) < n:
+                    continue
+                curve = _smooth_boilerplate(_t[inrng], _weights[inrng], n, time_range, independent)
+                if nan_between:
+                    curve = [_np.append(a, _np.nan) for a in curve]
+                curves.append(curve)
+            
         # sneaky code to take the list of curves and combine them
         bin_start, bin_stop, bin_midpt, rates, error = [_np.hstack(a) for a in zip(*curves)]
 
@@ -659,9 +778,9 @@ class Photons:
         bin_widths = _np.diff(bin_edges)
 
         # check that wavelength bins are fully within ranges of observations
-        within_obs = self.check_wavelength_coverage([bin_edges[[0,-1]]])[0]
+        within_obs = _np.any(self.check_wavelength_coverage([bin_edges[[0,-1]]]))
         if not within_obs:
-            raise ValueError('Bins must fall within the wavelength range of all observations.')
+            raise ValueError('Bins must fall within the wavelength range of at least one observation.')
 
         # get start and stop of all the time steps
         time_edges, valid_time_bins = self._construct_time_bins(time_step, bin_method, time_range)
@@ -685,6 +804,31 @@ class Photons:
 
     # ---------
     # UTILITIES
+    def get_obs(self, obsno):
+        new = Photons()
+        new.photons = self.photons[self.photons['n'] == obsno]
+        new.time_datum = self.time_datum
+        new.obs_bandpasses = [self.obs_bandpasses[obsno]]
+        new.obs_times = [self.obs_times[obsno]]
+        new.obs_metadata = [self.obs_metadata[obsno]]
+        return new
+
+
+    def which_obs(self, t):
+        obsno = _np.ones(t.shape, 'i2')*(-1)
+        for n, tranges in enumerate(self.obs_times):
+            i = _np.searchsorted(tranges.ravel(), t)
+            inobs = (i % 2) == 1
+
+            if not _np.all(obsno[inobs] == -1):
+                raise ValueError('Some observation time ranges overlap at the input times, so these times cannot be '
+                                 'uniquely associated with an observation.')
+
+            obsno[inobs] = n
+
+        return obsno
+
+
     def image(self, xax, yax, bins, weighted=False, scalefunc=None, show=True):
         """
 
@@ -719,24 +863,28 @@ class Photons:
 
     def check_wavelength_coverage(self, bandpasses):
         """
+        Returns a bollean array where the first dimension corresponds to the bnadpass and the second to the
+        observation where observations that fully include the bandpass are marked True.
 
         Parameters
         ----------
-        bandpasses
+        bandpasses: 2D array like
 
         Returns
         -------
-        boolean array
+        covered: 2D boolean array like
+
         """
-        covered = []
+
+        covered_bands = []
         for band in bandpasses:
-            waveranges = _np.vstack(self.obs_bandpasses)
-            beyond_range = [band[0] < waverange[0] or band[1] > waverange[1] for waverange in waveranges]
-            if any(beyond_range):
-                covered.append(False)
-            else:
-                covered.append(True)
-        return _np.array(covered)
+            covering_obs = []
+            for obs_bands in self.obs_bandpasses:
+                covering = _np.any((band[0] >= obs_bands[:,0]) & (band[1] <= obs_bands[:,1]))
+                covering_obs.append(covering)
+            covered_bands.append(covering_obs)
+
+        return _np.array(covered_bands, bool)
 
 
     def total_time(self):
@@ -776,6 +924,7 @@ class Photons:
 
         t = _np.zeros(len(w0), 'f8')
         for tranges, wranges  in zip(self.obs_times, self.obs_bandpasses):
+            tranges = _np.copy(tranges)
             if time_range is not None:
                 if tranges[0,0] < time_range[0]:
                     tranges[0,0] = time_range[0]
@@ -805,10 +954,20 @@ class Photons:
         return t
 
 
-    def clean_obs_times(self):
+    def clean_obs_times(self, bandpasses=None):
         # stack and sort all of the time ranges
-        obs_times = _np.vstack(self.obs_times)
+        if bandpasses is None:
+            obs_times_lst = self.obs_times
+        else:
+            covered = self.check_wavelength_coverage(bandpasses)
+            covered = _np.all(covered, 0)
+            if not _np.any(covered):
+                raise ValueError('No observations cover the provided bandpasses.')
+            obs_times_lst = [self.obs_times[i] for i in _np.nonzero(covered)[0]]
+
+        obs_times = _np.vstack(obs_times_lst)
         isort = _np.argsort(obs_times[:,0])
+        obs_times = obs_times[isort, :]
 
         # loop through dealing with overlap when it occurs
         clean_times = [obs_times[0]]
@@ -976,7 +1135,7 @@ class Photons:
         return _groom_bins(ybins, rng)
 
 
-    def _construct_time_bins(self, time_step, bin_method, time_range=None):
+    def _construct_time_bins(self, time_step, bin_method, time_range=None, bandpasses=None):
 
         if time_range is None:
             obs_times = _np.vstack(self.obs_times)
@@ -992,7 +1151,7 @@ class Photons:
         edges, valid = [], []
         marker = 0
 
-        for rng in self.clean_obs_times():
+        for rng in self.clean_obs_times(bandpasses):
             # adjust range to fit time_range if necessary
             if rng[0] >= time_range[1] or rng[1] <= time_range[0]:
                 continue
@@ -1028,7 +1187,7 @@ class Photons:
         return map(_np.array, [edges, valid])
 
 
-    def _bandpass_filter(self, bandpasses):
+    def _bandpass_filter(self, bandpasses, check_coverage=True):
         """
 
         Parameters
@@ -1046,7 +1205,8 @@ class Photons:
             bands = _np.reshape(bands, [-1, 2])
 
         # check that all bandpasses are fully within every observation's range
-        self.check_wavelength_coverage(bands)
+        if check_coverage and not _np.all(self.check_wavelength_coverage(bands)):
+            raise ValueError('Some bandpasses fall outside of the observation ranges.')
 
         # put bands in order of wavelength
         order = _np.argsort(bands, 0)[:,0]
@@ -1086,13 +1246,19 @@ class Photons:
         counts, errors
         """
 
+        x = self[dim]
         weights = self._full_weights(fluxed, energy_units)
+
+        if rng is None:
+            rng = bin_edges[[0,-1]]
+        inrng = (x > rng[0]) & (x < rng[1])
 
         if filter is None:
             filter = _np.ones(len(self), bool)
-        keep = filter & (weights != 0)
 
-        x = self[dim][keep]
+        keep = filter & (weights != 0) & inrng
+
+        x = x[keep]
         weights = weights[keep]
 
         counts = _np.histogram(x, bins=bin_edges, range=rng, weights=weights)[0]
@@ -1167,10 +1333,20 @@ def _smooth_bins(x, n, xrange=None):
     return bin_start, bin_stop
 
 
-def _smooth_boilerplate(x, weights, n, xrange=None):
+def _smooth_boilerplate(x, weights, n, xrange=None, independent=False):
     counts = _smooth_sum(weights, n)
     errors = _np.sqrt(_smooth_sum(weights**2, n))
     bin_start, bin_stop = _smooth_bins(x, n, xrange)
+
+    if independent:
+        slc = slice(n//2, None, n)
+        bin_start, bin_stop, counts, errors = [a[slc] for a in [bin_start, bin_stop, counts, errors]]
+
+    if _np.any(bin_stop == bin_start):
+        raise ValueError('More than n = {} photons with the same time stamp exist. You must use a larger n to make a '
+                         'well-defined lightcurve.'.format(n))
+    assert _np.all(bin_start[1:] >= bin_start[:-1])
+    assert _np.all(bin_stop[1:] >= bin_stop[:-1])
 
     # divide by bin wdiths and exposure times to get rates
     bin_widths = bin_stop - bin_start
@@ -1194,3 +1370,27 @@ def _inbins(bins, values):
 # import some submodules. I put these down here because they themselves import and use __init__. This is probably
 # bad. Maybe the photons class should be split out from __init__...
 import hst
+
+
+class Spectrum:
+    def __init__(self, edges, density, error):
+        self.edges = self.w = edges
+        self.density = self.f = density
+        self.error = self.e = error
+        self.d = self.dw = _np.diff(edges)
+        self.integral = self.I = self.dw*density
+        self.integral_variance = self.Iv = (self.dw*error)**2
+        self.cum_integral = self.cI =  _np.inster(_np.cumsum(self.I), 0, 0)
+        self.cum_integral_variance = self.cIv =  _np.inster(_np.cumsum(self.Iv), 0, 0)
+
+    def integrate(self, *args):
+        if len(args) == 2:
+            w0, w1 = args
+        elif len(args) == 1:
+            w0, w1 = args[0]
+        I0, I1 = _np.interp([w0, w1], self.w, self.cI)
+        Iv0, Iv1 = _np.interp([w0, w1], self.w, self.cIv)
+        value = I1 - I0
+        error = _np.sqrt(Iv1 - Iv0)
+        return value, error
+

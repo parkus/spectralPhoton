@@ -14,7 +14,8 @@ import utils as _utils
 
 # TODO: test with COS NUV and STIS echelle data
 
-def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True):
+def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True, flux_bins=2.0,
+               a_or_b='both'):
     """
 
     Parameters
@@ -33,24 +34,40 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
     # find all the tag files and matching x1d files
     tagfiles, x1dfiles = obs_files(directory)
 
-    # start by parsing photons from first observation
-    photons = readtag(tagfiles[0], x1dfiles[0], traceloc, fluxed, divvied, clipends)
+    def readfiles(tagfiles, x1dfiles):
+        # start by parsing photons from first observation
+        photons = readtag(tagfiles[0], x1dfiles[0], traceloc, fluxed, divvied, clipends, flux_bins=flux_bins)
 
-    # now prepend/append other observations (if available) in order of time
-    if len(tagfiles) > 1:
-        for tagfile, x1dfile in zip(tagfiles[1:], x1dfiles[1:]):
-            photons2 = readtag(tagfile, x1dfile, traceloc, fluxed, divvied, clipends)
+        # now prepend/append other observations (if available) in order of time
+        if len(tagfiles) > 1:
+            for tagfile, x1dfile in zip(tagfiles[1:], x1dfiles[1:]):
+                photons2 = readtag(tagfile, x1dfile, traceloc, fluxed, divvied, clipends, flux_bins=flux_bins)
 
-            # add in order of time
-            if photons2.time_datum < photons.time_datum:
-                photons = photons2 + photons
-            else:
-                photons = photons + photons2
+                # add in order of time
+                if photons2.time_datum < photons.time_datum:
+                    photons = photons2 + photons
+                else:
+                    photons = photons + photons2
 
-    return photons
+        return photons
+
+    if any([('corrtag_b' in tf) for tf in tagfiles]):
+        file_pairs = zip(tagfiles, x1dfiles)
+        if a_or_b in ['a', 'b']:
+            filter_ab = lambda seg: filter(lambda g: 'corrtag_' + seg in g[0], file_pairs)
+            file_pairs = filter_ab(a_or_b)
+            return readfiles(*zip(*file_pairs))
+        elif a_or_b == 'both':
+            p = readfiles(*zip(*file_pairs))
+            p.obs_bandpasses = map(_np.vstack, _np.split(p, _np.arange(2, len(p.obs_bandpasses), 2)))
+            p.merge_like_observations()
+        else:
+            raise ValueError("a_or_b should be one of ['a', 'b', 'both']")
+    else:
+        return readfiles(tagfiles, x1dfiles)
 
 
-def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True):
+def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True, flux_bins=2.0):
     """
 
     Parameters
@@ -61,6 +78,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     fluxed
     divvied
     clipends
+    flux_bin
 
     Returns
     -------
@@ -129,6 +147,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
         # keep only the wavelength range of the appropriate segment if FUV detector
         if hdr['detector'] == 'FUV':
             i = 0 if hdr['segment'] == 'FUVA' else 1
+            wave_ranges = wave_ranges[[i], :]
             photons.obs_bandpasses[0] = photons.obs_bandpasses[0][[i], :]
 
         # parse photons. I'm going to use sneaky list comprehensions and such. sorry. this is nasty because
@@ -167,7 +186,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             Aeff = _np.zeros_like(photons['t'])
             for i in segments:
-                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row=i, order=i, method=fluxed)
+                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row=i, order=i, method=fluxed, flux_bins=flux_bins)
                 Aeff[photons['o'] == i] = Aeff_i
 
             photons['a'] = Aeff
@@ -191,18 +210,23 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             Aeff = _np.zeros_like(photons['t'])
             for x1d_row, order in zip(range(Norders), order_nos):
-                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row, order, method=fluxed)
+                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row, order, method=fluxed, flux_bins=flux_bins)
                 Aeff[photons['o'] == order] = Aeff_i
 
             photons['a'] = Aeff
+
+            # FIXME: this is shoddy -- I'm trying to deal with having user-defined flux bins which don't really mathc
+            #  up with the bins of the orders and I end up with photons that don't get proper areas
+            keep = _np.isfinite(photons['a'])
+            photons.photons = photons.photons[keep]
 
     else:
         raise NotImplementedError('HST instrument {} not recognized/code not written to handle it.'
                                   ''.format(hdr['instrume']))
 
     # cull photons outside of wavelength and time ranges
-    keep_w = (photons['w'] >= wave_ranges[0,0]) & (photons['w'] <= wave_ranges[0,-1])
-    keep_t = (photons['t'] >= time_ranges[0,0]) & (photons['t'] <= time_ranges[0,-1])
+    keep_w = (photons['w'] >= wave_ranges.min()) & (photons['w'] <= wave_ranges.max())
+    keep_t = (photons['t'] >= time_ranges.min()) & (photons['t'] <= time_ranges.max())
     photons.photons = photons.photons[keep_w & keep_t]
 
     # add appropriate units
@@ -346,6 +370,9 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     f1d = fsig - area_ratio * (fbk0 + fbk1)
     e1d = _np.sqrt(esig**2 + (area_ratio * ebk0)**2 + (area_ratio * ebk1)**2)
 
+    # make sure no zero errors
+    e1d[e1d == 0] = e1d.min()
+
     # propagate the data quality flags
     q1d = qsig | qbk0 | qbk1
 
@@ -358,15 +385,16 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
 
     # -----PUT INTO TABLE-----
     # make data columns
-    colnames = ['w0', 'w1', 'flux', 'error', 'dq', 'exptime']
-    units = ['Angstrom'] * 2 + ['ergs/s/cm2/Angstrom'] * 2 + ['s']
+    colnames = ['w0', 'w1', 'w', 'flux', 'error', 'dq', 'exptime']
+    units = ['Angstrom'] * 3 + ['ergs/s/cm2/Angstrom'] * 2 + ['s']
     descriptions = ['left (short,blue) edge of the wavelength bin',
                     'right (long,red) edge of the wavelength bin',
+                    'midpoint of the wavelength bin'
                     'average flux over the bin',
                     'error on the flux',
                     'data quality flags',
                     'cumulative exposure time for the bin']
-    dataset = [w0, w1, f1d, e1d, q1d, expt]
+    dataset = [w0, w1, (w0+w1)/2., f1d, e1d, q1d, expt]
     cols = [_tbl.Column(d, n, unit=u, description=dn) for d, n, u, dn in
             zip(dataset, colnames, units, descriptions)]
 
@@ -386,7 +414,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     # -----PUT INTO FITS-----
     if fitsout is not None:
         # spectrum hdu
-        fmts = ['E'] * 4 + ['I', 'E']
+        fmts = ['E'] * 5 + ['I', 'E']
         cols = [_fits.Column(n, fm, u, array=d) for n, fm, u, d in
                 zip(colnames, fmts, units, dataset)]
         del meta['descriptions']
@@ -517,10 +545,26 @@ def rectify_g140m(g140mtag):
     # identify iarglow by finding maxima of each row of pixels in x direction
     x_mx = _np.argmax(img, axis=0)
     count_mx = img[x_mx,range(2048)]
-
-    # fit a line to the airglow line, weighting by counts (amounts to weighting by S/N)
     ymids = (edges[:-1] + edges[1:])/2.0
-    dxdy, x0 = _np.polyfit(ymids, x_mx, 1, w=count_mx)
+
+    # when airglow is faint, a lot of hot pixels in the upper left of the detecotor throw this off. to prevent this,
+    # histogram the values, find the mode, and cull points that are well off of the mode
+    dx = 20
+    xbins = _np.arange(0, 2048 + dx, dx)
+    xcnt = _np.histogram(x_mx, xbins)[0]
+    xcenter = xbins[_np.argmax(xcnt)] + dx/2.0
+    keep = abs(x_mx - xcenter) < 50
+
+    # fit a line to the airglow line, weighting by counts (amounts to weighting by S/N), with iterative sigma clipping
+    # (without sigma clipping, a very slight tilt in the airglwo line would sometimes still remain)
+    while True:
+        ymids, x_mx, count_mx = [a[keep] for a in [ymids, x_mx, count_mx]]
+        dxdy, x0 = _np.polyfit(ymids, x_mx, 1, w=count_mx)
+        xline = ymids*dxdy + x0
+        std = _np.std(x_mx - xline)
+        keep = abs(x_mx - xline) < 3*std
+        if _np.all(keep):
+            break
 
     # rotate all tags to make airglow line vertical
     angle = _np.arctan(dxdy)
@@ -545,7 +589,7 @@ def rectify_g140m(g140mtag):
     return xr,yr,w
 
 
-def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bksize=10):
+def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bksize=10, flux_bins=None):
 
     tag = _fits.open(g140mtagfile)
 
@@ -579,52 +623,69 @@ def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bks
         beg, end = _np.nonzero(good_pixels)[0][[0,-1]]
         spec2 = spec2[beg:end+1]
         w_bins = _np.append(spec2['w0'], spec2['w1'][-1])
-        photons['a'] = _get_Aeff_compare(photons, w_bins, spec2['flux'], spec2['error'])
+        photons['a'] = _get_Aeff_compare(photons, w_bins, spec2['flux'], spec2['error'], rebin=flux_bins)
         photons['a'].unit = _u.erg
 
     return photons
 
 
-def _get_Aeff_compare(photons_or_cps, bin_edges, flux, error, order='all'):
+def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2.0):
 
-    if isinstance(photons_or_cps, _sp.Photons):
-        photons = photons_or_cps
+    adaptive_bin = type(rebin) in [float, int]
+    user_bin = hasattr(rebin, '__iter__')
+    if adaptive_bin and error is None:
+        raise ValueError('Must supply error array if rebinning by S/N.')
 
-        if 'r' not in photons:
-            raise ValueError('Photons must have region information (signal/background) for tag_vs_x1d fluxing.')
+    if 'r' not in photons:
+        raise ValueError('Photons must have region information (signal/background) for tag_vs_x1d fluxing.')
 
-        # get count rate spectrum using the x1d wavelength edges
-        cps_density, cps_error = photons.spectrum(bin_edges, order=order)[2:4]
+    if user_bin:
+        keep = (rebin > bin_edges.min()) & (rebin < bin_edges.max())
+        rebin = rebin[keep]
 
-        # adaptively rebin both spectra to have min S/N of 2.0 with the same bins for each
+    # get count rate spectrum using the x1d wavelength edges
+    use_edges = rebin if user_bin else bin_edges
+    cps_density, cps_error = photons.spectrum(use_edges, order=order)[2:4]
+
+    if adaptive_bin:
+        # adaptively rebin both spectra to have min S/N of 1.0 with the same bins for each
         bin_edges_ds, densities, errors = _utils.adaptive_downsample(bin_edges, [flux, cps_density],
-                                                                     [error, cps_error], 2.0)
-
+                                                                     [error, cps_error], rebin)
         flux, cps_density = densities
+    if user_bin:
+        bin_edges_ds = rebin
+        flux = _utils.rebin(bin_edges_ds, bin_edges, flux)
 
-        # I want counts for the computation below not count density
-        w = (bin_edges_ds[:-1] + bin_edges_ds[1:])/2.0
-        dw = _np.diff(bin_edges_ds)
-        cps = cps_density*dw
-    else:
-        dw = _np.diff(bin_edges)
+    # I want counts for the computation below not count density
+    w = (bin_edges_ds[:-1] + bin_edges_ds[1:])/2.0
+    dw = _np.diff(bin_edges_ds)
+    cps = cps_density*dw
 
     # compare count rate to x1d flux to compute effective area grid
     avg_energy = _const.h*_const.c / (w * _u.AA)  # not quite right but fine for dw/w << 1
     avg_energy = avg_energy.to('erg').value
     Aeff_grid =  cps*avg_energy/(dw*flux)
 
+    # replace non-finite values (like where there were zero counts) with interpolated values
+    good = _np.isfinite(Aeff_grid)
+    bad = ~good
+    Aeff_grid[bad] = _np.interp(w[bad], w[good], Aeff_grid[good], left=_np.nan, right=_np.nan)
+
     # interpolate the effective areas at the photon wavelengths
     if order == 'all':
         in_order = slice(None)
     else:
         in_order = (photons['o'] == order)
-    Aeff = _np.interp(photons['w'][in_order], w, Aeff_grid)
+    eventw = photons['w'][in_order]
+    i_bin = _np.searchsorted(bin_edges_ds, eventw)
+    in_range = (i_bin > 0) & (i_bin < len(bin_edges_ds))
+    Aeff = _np.nan*_np.ones_like(eventw)
+    Aeff[in_range] = Aeff_grid[i_bin[in_range]-1]
 
     return Aeff
 
 
-def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only'):
+def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only', flux_bins=None):
     """
 
     Parameters
@@ -647,9 +708,9 @@ def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only'):
     w_bins = _utils.wave_edges(w)
 
     if method == 'x1d_only':
-        Aeff = _get_Aeff_compare(cps, w_bins, flux, error, order)
+        Aeff = _get_Aeff_compare(cps, w_bins, flux, error, order, rebin=flux_bins)
     elif method == 'tag_vs_x1d':
-        Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order)
+        Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins)
     else:
         raise ValueError('fluxmethod not recognized.')
 
@@ -869,9 +930,8 @@ def stsci_extraction_ranges(x1d, seg=''):
     yback = _np.array([bkoff - bksize/2.0, bkoff + bksize/2.0]).T
 
     # make sure there is no overlap between the signal and background regions
-    if bkoff is 'stsci':
-        if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
-        if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
+    if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
+    if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
 
     return ysignal, yback
 
