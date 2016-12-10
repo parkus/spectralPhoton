@@ -498,21 +498,24 @@ class Photons:
         edges, isignal, iback, area_ratio = self._get_ribbon_edges(ysignal, yback)
 
         # deal just with the photons of appropriate order
-        filter = _np.ones(len(self), bool) if order is None else self['o']
+        if order is not None:
+            filter, = _np.nonzero(self['o'] == order)
 
         # determine which band counts are in
-        ii = _np.searchsorted(edges, self['y'][filter])
+        y = self['y'] if order is None else self['y'][filter]
+        ii = _np.searchsorted(edges, y)
 
         # add/modify weights in 'r' column
         # TRADE: sacrifice memory with a float weights column versus storing the area ratio and just using integer
         # flags because this allows better flexibility when combining photons from multiple observations
-        if 'r' not in self:
-            self['r'] = _np.zeros_like(self['e']) if 'e' in self else _np.zeros(len(self), 'f4')
+        self['r'] = _np.zeros(len(self), 'f4')
         signal = reduce(_np.logical_or, [ii == i for i in isignal])
-        self['r'][signal & filter] = 1.0
+        if order is not None: signal = filter[signal]
+        self['r'][signal] = 1.0
         if len(yback) > 0:
             bkgnd = reduce(_np.logical_or, [ii == i for i in iback])
-            self['r'][filter & bkgnd] = -area_ratio
+            if order is not None: bkgnd = filter[bkgnd]
+            self['r'][bkgnd] = -area_ratio
 
 
     def squish(self, keep='both'):

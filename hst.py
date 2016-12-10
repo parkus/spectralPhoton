@@ -629,14 +629,14 @@ def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bks
     return photons
 
 
-def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2.0):
+def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2.0, x1d_net=None):
 
     adaptive_bin = type(rebin) in [float, int]
     user_bin = hasattr(rebin, '__iter__')
     if adaptive_bin and error is None:
         raise ValueError('Must supply error array if rebinning by S/N.')
 
-    if 'r' not in photons:
+    if x1d_net is not None and 'r' not in photons:
         raise ValueError('Photons must have region information (signal/background) for tag_vs_x1d fluxing.')
 
     if user_bin:
@@ -644,8 +644,13 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
         rebin = rebin[keep]
 
     # get count rate spectrum using the x1d wavelength edges
-    use_edges = rebin if user_bin else bin_edges
-    cps_density, cps_error = photons.spectrum(use_edges, order=order)[2:4]
+    if x1d_net is None:
+        use_edges = rebin if user_bin else bin_edges
+        cps_density, cps_error = photons.spectrum(use_edges, order=order)[2:4]
+    else:
+        if adaptive_bin:
+            raise NotImplementedError('Haven\'t made it so you can use adaptive binning with x1d only fluxing yet.')
+        cps = x1d_net
 
     if adaptive_bin:
         # adaptively rebin both spectra to have min S/N of 1.0 with the same bins for each
@@ -655,16 +660,19 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
     if user_bin:
         bin_edges_ds = rebin
         flux = _utils.rebin(bin_edges_ds, bin_edges, flux)
+        if x1d_net is not None:
+            cps = _utils.rebin(bin_edges_ds, bin_edges, cps)
 
-    # I want counts for the computation below not count density
-    w = (bin_edges_ds[:-1] + bin_edges_ds[1:])/2.0
+    w = (bin_edges_ds[:-1] + bin_edges_ds[1:]) / 2.0
     dw = _np.diff(bin_edges_ds)
-    cps = cps_density*dw
+    if x1d_net is None:
+        # I want counts for the computation below not count density
+        cps = cps_density*dw
 
     # compare count rate to x1d flux to compute effective area grid
     avg_energy = _const.h*_const.c / (w * _u.AA)  # not quite right but fine for dw/w << 1
     avg_energy = avg_energy.to('erg').value
-    Aeff_grid =  cps*avg_energy/(dw*flux)
+    Aeff_grid = cps*avg_energy/(dw*flux)
 
     # replace non-finite values (like where there were zero counts) with interpolated values
     good = _np.isfinite(Aeff_grid)
@@ -708,7 +716,7 @@ def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only', flux_bins=Non
     w_bins = _utils.wave_edges(w)
 
     if method == 'x1d_only':
-        Aeff = _get_Aeff_compare(cps, w_bins, flux, error, order, rebin=flux_bins)
+        Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins, x1d_net=cps)
     elif method == 'tag_vs_x1d':
         Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins)
     else:
