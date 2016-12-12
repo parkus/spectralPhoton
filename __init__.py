@@ -1337,17 +1337,24 @@ def _smooth_bins(x, n, xrange=None):
 
 
 def _smooth_boilerplate(x, weights, n, xrange=None, independent=False):
+    # first, combine photons with the same time stamp. This isn't ideal, but it prevents errors if n is less than the
+    # greatest number of photons with the same stamp
+    xu = _np.unique(x)
+    if len(xu) < len(x):
+        edges = (xu[1:] + xu[:-1]) / 2.0
+        edges = _np.insert(edges, [0, len(edges)], [edges[0] - 1, edges[-1] + 1])
+        weights, _ = _np.histogram(x, edges, weights=weights)
+        x = xu
+
     counts = _smooth_sum(weights, n)
     errors = _np.sqrt(_smooth_sum(weights**2, n))
     bin_start, bin_stop = _smooth_bins(x, n, xrange)
+    assert len(counts) == len(errors) == len(bin_start) == len(bin_stop)
 
     if independent:
         slc = slice(n//2, None, n)
         bin_start, bin_stop, counts, errors = [a[slc] for a in [bin_start, bin_stop, counts, errors]]
 
-    if _np.any(bin_stop == bin_start):
-        raise ValueError('More than n = {} photons with the same time stamp exist. You must use a larger n to make a '
-                         'well-defined lightcurve.'.format(n))
     assert _np.all(bin_start[1:] >= bin_start[:-1])
     assert _np.all(bin_stop[1:] >= bin_stop[:-1])
 
