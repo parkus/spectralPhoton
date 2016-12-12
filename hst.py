@@ -650,7 +650,7 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
     else:
         if adaptive_bin:
             raise NotImplementedError('Haven\'t made it so you can use adaptive binning with x1d only fluxing yet.')
-        cps = x1d_net
+        cps_density = x1d_net/_np.diff(bin_edges)
 
     if adaptive_bin:
         # adaptively rebin both spectra to have min S/N of 1.0 with the same bins for each
@@ -661,13 +661,11 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
         bin_edges_ds = rebin
         flux = _utils.rebin(bin_edges_ds, bin_edges, flux)
         if x1d_net is not None:
-            cps = _utils.rebin(bin_edges_ds, bin_edges, cps)
+            cps_density = _utils.rebin(bin_edges_ds, bin_edges, cps_density)
 
     w = (bin_edges_ds[:-1] + bin_edges_ds[1:]) / 2.0
     dw = _np.diff(bin_edges_ds)
-    if x1d_net is None:
-        # I want counts for the computation below not count density
-        cps = cps_density*dw
+    cps = cps_density*dw
 
     # compare count rate to x1d flux to compute effective area grid
     avg_energy = _const.h*_const.c / (w * _u.AA)  # not quite right but fine for dw/w << 1
