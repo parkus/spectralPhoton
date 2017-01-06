@@ -860,7 +860,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
     return time, wave, xdisp, order, dq
 
 
-def good_waverange(x1d, clipends=False, clipflags=0b0000000110000100):
+def good_waverange(x1d, clipends=False, clipflags=None):
     """
     Returns the range of good wavelengths based on the x1d.
 
@@ -877,10 +877,13 @@ def good_waverange(x1d, clipends=False, clipflags=0b0000000110000100):
     -------
 
     """
-    xd = _fits.getdata(x1d) if type(x1d) is str else x1d[1].data
+    if type(x1d) == str: x1d = _fits.open(x1d)
+    xd = x1d[1].data
     wave = xd['wavelength']
     edges = map(_utils.wave_edges, wave)
     if clipends:
+        if clipflags is None:
+            clipflags = 2 + 128 + 256 if x1d[0].header['instrume'] == 'STIS' else 8 + 128 + 256
         dq = xd['dq']
         minw, maxw = [], []
         for e,d in zip(edges,dq):
