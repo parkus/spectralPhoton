@@ -428,8 +428,25 @@ class Photons:
             new_datum = self.time_datum + dt
         else:
             dt = new_datum - self.time_datum
-
         dt = dt.to(self['t'].unit).value
+
+        # ensure appropriate precision is maintained
+        ddt = _np.diff(self['t'])
+        dtmin = ddt[ddt > 0].min()
+        max_bit = _np.log2(self['t'][-1] + abs(dt))
+        min_bit = _np.log2(dtmin)
+        need_bits = _np.ceil(max_bit - min_bit) + 3
+        need_bytes = _np.ceil(need_bits/8.)
+        if need_bytes > 8:
+            raise ValueError('Resetting the time atum of this observation by {} {} will result in loss of numerical '
+                             'precision of the photon arrival times.'.format(dt, self['t'].unit))
+        use_bytes = have_bytes = int(self['t'].dtype.str[-1])
+        while need_bytes > use_bytes and use_bytes < 8:
+            use_bytes *= 2
+        if use_bytes != have_bytes:
+            new_dtype = 'f' + str(use_bytes)
+            self['t'] = self['t'].astype(new_dtype)
+
         self['t'] -= dt
         self.time_datum = new_datum
         self.obs_times = [t - dt for t in self.obs_times]
