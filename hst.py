@@ -503,8 +503,7 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
         # otherwise, it's just a simple subtraction
         else:
             if traceloc == 'stsci':
-                yexpected, yoff = [x1d[1].header[s+segment[-1]] for s in ['SP_LOC_','SP_OFF_']]
-                yspec = yexpected + yoff
+                yspec = x1d[1].header['SP_LOC_'+segment[-1]]
             elif traceloc == 'median':
                 Npixx  = th['talen2']
                 x, y = td['xfull'], td['yfull']
