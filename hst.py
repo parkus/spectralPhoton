@@ -150,28 +150,25 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
             wave_ranges = wave_ranges[[i], :]
             photons.obs_bandpasses[0] = photons.obs_bandpasses[0][[i], :]
 
+        if hdr['detector'] == 'NUV':
+            raise NotImplementedError('Gotta do some work on this. Fluxing is not working well.')
+
         # parse photons. I'm going to use sneaky list comprehensions and such. sorry. this is nasty because
         # supposedly stsci sometimes puts tags into multiple 'EVENTS' extensions
-        get_data = lambda extension: [extension.data[s] for s in ['time', 'wavelength', 'epsilon', 'dq', 'pha']]
-        data_list = [get_data(extension) for extension in tag if extension.name == 'EVENTS']
-        data = map(_np.hstack, zip(*data_list))
-        photons.photons = _tbl.Table(data=data, names=['t', 'w', 'e', 'q', 'pulse_height'])
-
-        # add cross dispersion and order info
-        xdisp, order = _get_yinfo_COS(tag, x1d, traceloc)
-        photons['y'], photons['o'] = xdisp, order
+        t, w, e, q, ph, y, o = _get_photon_info_COS(tag, x1d, traceloc)
+        photons.photons = _tbl.Table([t, w, e, q, ph, y, o], names=['t', 'w', 'e', 'q', 'pulse_height', 'y', 'o'])
 
         # cull anomalous events
         bad_dq = 64 | 512 | 2048
         bad = (_np.bitwise_and(photons['dq'], bad_dq) > 0)
         photons.photons = photons.photons[~bad]
 
-        # add signal/background column to photons
+        # reference photons to trace location(s) and divvy into signal and background regions
         if divvyit:
             if hdr['detector'] == 'NUV':
                 limits = [stsci_extraction_ranges(x1d, seg) for seg in ['A', 'B', 'C']]
                 ysignal, yback = zip(*limits)
-                map(photons.divvy, ysignal, yback, [0, 1, 2])
+                map(photons.divvy, ysignal, yback)
             elif hdr['detector'] == 'FUV':
                 seg = hdr['segment']
                 ysignal, yback = stsci_extraction_ranges(x1d, seg)
@@ -440,7 +437,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     return tbl
 
 
-def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
+def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
     """
     Add spectral units (wavelength, cross dispersion distance, energy/area)
     to the photon table in the fits data unit "tag".
@@ -459,18 +456,17 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
     xdisp, order
     """
 
-    segment = tag[0].header['segment']
     if x1d is not None:
         xd, xh = x1d[1].data, x1d[1].header
-    det = tag[0].header['detector']
 
-    xdisp_list, order_list = [], []
+    det = tag[0].header['detector']
+    segment = tag[0].header['segment']
+
+    data_list = []
     for i,t in enumerate(tag):
         if t.name != 'EVENTS': continue
 
         td,th = t.data, t.header
-
-
 
         """
         Note: How STScI extracts the spectrum is unclear. Using 'y_lower/upper_outer' from the x1d reproduces the
@@ -483,27 +479,22 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
         reasonable.
         """
 
-        # all "orders" (segments) of the NUV spectra fall on the same detector and are just offset in y,
-        # so find the distance of the counts from each order to find which one they match with
+        data = [td[s] for s in ['time', 'wavelength', 'epsilon', 'dq', 'pha']]
         if det == 'NUV':
-            if traceloc != 'stsci':
+            # all "orders" (segments) of the NUV spectra fall on the same detector and are just offset in y,
+            # I'll just duplicate the events for each spectrum
+            segs = [s[-1] for s in xd['segment']]
+            orders = range(len(segs))
+        else:
+            seg = segment[-1]
+            segs = [seg]
+            orders = [0 if seg == 'A' else 1]
+        for order, seg in zip(orders, segs):
+            if traceloc != 'stsci' and det == 'NUV':
                 raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
                                           'has not been implemented.')
-            segs = ['A', 'B', 'C'] # [s[-1] for s in xd['segment']] commented out to make x1d not used
-            yextr = _np.array([xh['SP_LOC_' + seg] for seg in segs])
-            yoff = _np.array([xh['SP_OFF_' + seg] for seg in segs])
-            yspec = yextr + yoff
-            xdisps = td['yfull'][_np.newaxis, :] - yspec[:, _np.newaxis]
-
-            # associate orders with each count
-            order = _np.argmin(abs(xdisps), 0)
-
-            xdisp = xdisps[order, _np.arange(len(td['yfull']))]
-
-        # otherwise, it's just a simple subtraction
-        else:
             if traceloc == 'stsci':
-                yspec = x1d[1].header['SP_LOC_'+segment[-1]]
+                yspec = xh['SP_LOC_'+seg]
             elif traceloc == 'median':
                 Npixx  = th['talen2']
                 x, y = td['xfull'], td['yfull']
@@ -515,16 +506,25 @@ def _get_yinfo_COS(tag, x1d, traceloc='stsci'):
                 yspec = float(traceloc)
             else:
                 raise ValueError('traceloc={} not recognized.'.format(traceloc))
-
             xdisp = td['yfull'] - yspec
-            order = _np.zeros(len(td), 'i2') if segment[-1] == 'A' else _np.ones(len(td), 'i2')
+            order_vec = _np.ones_like(xdisp, 'i2')*order
 
-        xdisp_list.append(xdisp)
-        order_list.append(order)
+            if det == 'NUV':
+                w = data[1]
+                keep = (xdisp > -15.) & (xdisp < 15.)
+                x = td['xfull']
+                xref, wref = x[keep], w[keep]
+                isort = _np.argsort(xref)
+                xref, wref = xref[isort], wref[isort]
+                wnew = _np.interp(x, xref, wref)
+                data_list.append(data[:1] + [wnew] + data[2:] + [xdisp, order_vec])
+            else:
+                data_list.append(data + [xdisp, order_vec])
 
-    xdisp, order = map(_np.hstack, [xdisp_list, order_list])
 
-    return xdisp, order
+    data = map(_np.hstack, zip(*data_list))
+
+    return data
 
 
 def rectify_g140m(g140mtag):
@@ -780,7 +780,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
         if x1d is None:
             if header['TC2_3'] != 0:
                 raise NotImplementedError('Whoa! I didn\'t expect that. STScI gave a nonzero value for the change in '
-                                          'waveelngth with change in y pixel. Hmmm, better revise the code to deal '
+                                          'wavelength with change in y pixel. Hmmm, better revise the code to deal '
                                           'with that.')
             x0, y0, dydx = [header[s] for s in ['tcrpx2', 'tcrvl2', 'tc2_2']]
             compute_wave = lambda x: (x - x0)*dydx + y0
@@ -938,6 +938,7 @@ def stsci_extraction_ranges(x1d, seg=''):
     yback = _np.array([bkoff - bksize/2.0, bkoff + bksize/2.0]).T
 
     # make sure there is no overlap between the signal and background regions
+    yback = yback[_np.argsort(yback[:,0]), :]  # else the bottom two lines can screw things up
     if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
     if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
 

@@ -347,7 +347,7 @@ class Photons:
 
         # save all extensions
         hdulist = _fits.HDUList([primary_hdu, photon_hdu] + obs_hdus)
-        hdulist.writeto(path, clobber=overwrite)
+        hdulist.writeto(path, overwrite=overwrite)
 
 
     @classmethod
@@ -510,6 +510,7 @@ class Photons:
 
         # groom the input
         ysignal, yback = [_np.reshape(a, [-1, 2]) for a in [ysignal, yback]]
+        assert order is None or type(order) == int
 
         # join the edges into one list
         edges, isignal, iback, area_ratio = self._get_ribbon_edges(ysignal, yback)
