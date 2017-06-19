@@ -255,6 +255,8 @@ def inranges(values, ranges, inclusive=[False, True]):
 
     Returns a boolean array indexing the values that are in the ranges.
     """
+    if ranges is None:
+        return _np.ones_like(values, bool)
     ranges = _np.asarray(ranges)
     if ranges.ndim == 2:
         if ranges.shape[1] != 2:

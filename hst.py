@@ -12,7 +12,7 @@ import __init__ as _sp
 import utils as _utils
 
 
-# TODO: test with COS NUV and STIS echelle data
+# TODO: test with COS NUV data
 
 def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True, flux_bins=2.0,
                a_or_b='both'):
@@ -240,9 +240,10 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
 
 def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='stsci', x1dfile=None, fitsout=None,
-            clobber=True, bkmask=0):
+            overwrite=True, bkmask=0):
     """
-    Creates a spectrum using the x2d file.
+    Creates a spectrum from HST STIS (or maybe also COS?) data from HST using the x2d file provided by the default 
+    STScI pipeline.
 
     Parameters
     ----------
@@ -263,7 +264,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
         Path of the x1d file.
     fitsout : str, optional
         Path for saving a FITS file version of the spectrum.
-    clobber : {True|False}, optional
+    overwrite : {True|False}, optional
         Whether to overwrite the existing FITS file.
     bkmask : int, optional
         Data quality flags to mask the background. Background pixels that have
@@ -284,6 +285,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     This still isn't as good as an x1d, mainly because the wavelength dependency
     of the slit losses is not accounted for.
     """
+
     x2d = _fits.open(x2dfile)
 
     # get the flux and error from the x2d
@@ -380,13 +382,13 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     # construct exposure time array
     expt = _np.ones(f.shape[0]) * x2d['sci'].header['exptime']
 
-    # -----PUT INTO TABLE-----
+    #region PUT INTO TABLE
     # make data columns
     colnames = ['w0', 'w1', 'w', 'flux', 'error', 'dq', 'exptime']
     units = ['Angstrom'] * 3 + ['ergs/s/cm2/Angstrom'] * 2 + ['s']
     descriptions = ['left (short,blue) edge of the wavelength bin',
                     'right (long,red) edge of the wavelength bin',
-                    'midpoint of the wavelength bin'
+                    'midpoint of the wavelength bin',
                     'average flux over the bin',
                     'error on the flux',
                     'data quality flags',
@@ -407,8 +409,9 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
 
     # put into table
     tbl = _tbl.Table(cols, meta=meta)
+    #endregion
 
-    # -----PUT INTO FITS-----
+    #region PUT INTO FITS
     if fitsout is not None:
         # spectrum hdu
         fmts = ['E'] * 5 + ['I', 'E']
@@ -432,7 +435,8 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
         prihdu = _fits.PrimaryHDU(header=prihdr)
 
         hdulist = _fits.HDUList([prihdu, spechdu])
-        hdulist.writeto(fitsout, clobber=clobber)
+        hdulist.writeto(fitsout, clobber=overwrite)
+    #endregion
 
     return tbl
 
@@ -607,7 +611,7 @@ def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bks
     # make a phtons object using readtag and just replace w and y
     photons = readtag(g140mtagfile, None, traceloc=0.0, divvied=False, fluxed=False)
     photons['y'] = xdisp
-    photons['w'] = w
+    photons['w'] = w*_u.AA
 
     # divvy the photons
     ysignal = [[-extrsize/2.0, extrsize/2.0]]

@@ -5,7 +5,6 @@ import astropy.units as _u
 import astropy.constants as _const
 import numpy as _np
 import matplotlib.pyplot as plt
-import warnings
 import utils
 
 
@@ -70,9 +69,7 @@ class Photons:
                         'weight':'e', 'eps':'e', 'epsilon':'e', 'event weight':'e', 'wt':'e', 'wght':'e',
                         'region':'r', 'ribbon':'r', 'rgn_wght':'r'}
 
-    # ---------
-    # OBJECT HANDLING
-
+    #region OBJECT HANDLING
     def __init__(self, **kwargs):
         """
         Create an empty Photons object. This is really just to show what the derived classes must define. If I ever
@@ -269,10 +266,9 @@ class Photons:
         photons = _tbl.vstack([self.photons, other.photons])
 
         # leave it to the user to deal with sorting and grouping and dealing with overlap as they see fit :)
-
         obs_metadata = self.obs_metadata + other.obs_metadata
-        obs_times = self.obs_times + other.obs_times
-        obs_bandpasses = self.obs_bandpasses + other.obs_bandpasses
+        obs_times = list(self.obs_times) + list(other.obs_times)
+        obs_bandpasses = list(self.obs_bandpasses) + list(other.obs_bandpasses)
 
         return Photons(photons=photons, obs_metadata=obs_metadata, time_datum=self.time_datum, obs_times=obs_times,
                        obs_bandpasses=obs_bandpasses)
@@ -402,14 +398,10 @@ class Photons:
         obj.obs_bandpasses = bands
 
         return obj
+    #endregion
 
 
-
-
-
-
-    # ---------
-    # DATA MANIPULATION METHODS
+    #region DATA MANIPULATION METHODS
     def set_time_datum(self, new_datum=None):
         """
         Modifies the Photons object in-place to have a new time datum. Default is to set to the time of the earliest
@@ -558,14 +550,11 @@ class Photons:
             new.photons = self.photons[self['r'] > 0]
             del new.photons['r']
         return new
+    #endregion
 
 
-
-
-
-    # --------
-    # ANALYSIS METHODS
-    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all'):
+    # region ANALYSIS METHODS
+    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all', time_ranges=None):
         """
 
         Parameters
@@ -581,16 +570,20 @@ class Photons:
         bin_edges, bin_midpts, rates, errors
 
         """
-        if order == 'all':
+        if time_ranges is None and order == 'all':
             filter = None
         else:
-            filter = (self['o'] == order)
+            filter = _np.ones(len(self), bool)
+            if order != 'all':
+                filter = filter & (self['o'] == order)
+            if time_ranges is not None:
+                filter  = filter & utils.inranges(self['t'], time_ranges)
 
         bin_edges = self._groom_wbins(bins, waverange)
         counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter)
 
         # divide by bin widths and exposure time to get rates
-        bin_exptime = self.time_per_bin(bin_edges)
+        bin_exptime = self.time_per_bin(bin_edges, time_ranges=time_ranges)
         bin_exptime[bin_exptime == 0] = _np.nan # use nans to avoid division errors
         bin_widths = _np.diff(bin_edges)
         rates = counts/bin_exptime/bin_widths
@@ -602,7 +595,7 @@ class Photons:
         return bin_edges, bin_midpts, rates, errors
 
 
-    def spectrum_smooth(self, n, wave_range=None, time_range=None, fluxed=False, energy_units='erg'):
+    def spectrum_smooth(self, n, wave_range=None, time_ranges=None, fluxed=False, energy_units='erg'):
         """
 
         Parameters
@@ -625,10 +618,10 @@ class Photons:
         w = self['w']
 
         # which photons are in time range
-        in_time_range = self._in_range('t', time_range)
+        in_time_range = utils.inranges(self['t'], time_ranges)
 
         # which photons are in wavelength range
-        in_wave_range = self._in_range('w', wave_range)
+        in_wave_range = utils.inranges(self['w'], wave_range)
 
         # which photons have nonzero weight
         countable = (weights != 0)
@@ -647,7 +640,7 @@ class Photons:
         bin_start, bin_stop, bin_midpts, rates, errors = _smooth_boilerplate(w, weights, n, wave_range)
 
         # divide by time to get rates
-        bin_exptimes = self.time_per_bin([bin_start, bin_stop], time_range)
+        bin_exptimes = self.time_per_bin([bin_start, bin_stop], time_ranges)
         rates = rates/bin_exptimes
         errors = errors/bin_exptimes
 
@@ -655,7 +648,7 @@ class Photons:
 
 
     def lightcurve(self, time_step, bandpasses, time_range=None, bin_method='elastic', fluxed=False,
-                   energy_units='erg'):
+                   energy_units='erg', nan_between=False, background=False):
         """
 
         Parameters
@@ -685,14 +678,21 @@ class Photons:
         inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
         # histogram the counts
-        counts, errors = self._histogram('t', edges, time_range, fluxed, energy_units, filter=inbands)
+        counts, errors = self._histogram('t', edges, time_range, fluxed, energy_units, filter=inbands,
+                                         background=background)
 
         # get length of each time bin and the bin start and stop
         dt = _np.diff(edges)
         bin_start, bin_stop = edges[:-1], edges[1:]
 
         # get rid of the bins in between exposures
-        counts, errors, dt, bin_start, bin_stop = [a[valid_bins] for a in [counts, errors, dt, bin_start, bin_stop]]
+        if nan_between:
+            betweens = _np.ones_like(counts, bool)
+            betweens[valid_bins] = False
+            for a in [counts, errors, dt, bin_start, bin_stop]:
+                a[betweens] = _np.nan
+        else:
+            counts, errors, dt, bin_start, bin_stop = [a[valid_bins] for a in [counts, errors, dt, bin_start, bin_stop]]
 
         # divide by exposure time to get rates
         rates, errors = counts/dt, errors/dt
@@ -744,7 +744,7 @@ class Photons:
         inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
         # which photons are in specified time range
-        in_time_range = self._in_range('t', time_range)
+        in_time_range = utils.inranges(self['t'], time_range)
 
         # which photons have nonzero weight
         countable = (weights != 0)
@@ -769,7 +769,10 @@ class Photons:
                 curves.append(curve)
             
         # sneaky code to take the list of curves and combine them
-        bin_start, bin_stop, bin_midpt, rates, error = [_np.hstack(a) for a in zip(*curves)]
+        if len(curves) > 0:
+            bin_start, bin_stop, bin_midpt, rates, error = [_np.hstack(a) for a in zip(*curves)]
+        else:
+            bin_start, bin_stop, bin_midpt, rates, error = [_np.array([]) for _ in range(5)]
 
         return bin_start, bin_stop, bin_midpt, rates, error
 
@@ -804,13 +807,19 @@ class Photons:
             raise ValueError('Bins must fall within the wavelength range of at least one observation.')
 
         # get start and stop of all the time steps
-        time_edges, valid_time_bins = self._construct_time_bins(time_step, bin_method, time_range)
-        starts, stops = time_edges[:-1][valid_time_bins], time_edges[1:][valid_time_bins]
+        if hasattr(time_step, '__iter__'):
+            print 'I see that you gave user supplied time bins. That is fine, but note that no checks will be ' \
+                  'performed to ensure wavlength and time coverage in that range. And any time_range parameter will ' \
+                  'be ignored.'
+            starts, stops = _np.asarray(time_step).T
+        else:
+            time_edges, valid_time_bins = self._construct_time_bins(time_step, bin_method, time_range)
+            starts, stops = time_edges[:-1][valid_time_bins], time_edges[1:][valid_time_bins]
         time_midpts = (starts + stops)/2.0
 
         spectra = []
         for time_range in zip(starts, stops):
-            in_time_range = self._in_range('t', time_range)
+            in_time_range = utils.inranges(self['t'], time_range)
             counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter=in_time_range)
             bintimes = self.time_per_bin(bin_edges, time_range)
             rates, errors = counts/bintimes/bin_widths, errors/bintimes/bin_widths
@@ -818,16 +827,16 @@ class Photons:
         rates, errors = map(_np.array, zip(*spectra))
 
         return starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
+    #endregion
 
 
-
-
-
-    # ---------
-    # UTILITIES
+    #region UTILITIES
     def get_obs(self, obsno):
+        if 'n' not in self:
+            self.photons['n'] = 0
         new = Photons()
         new.photons = self.photons[self.photons['n'] == obsno]
+        new.photons['n'] = 0
         new.time_datum = self.time_datum
         new.obs_bandpasses = [self.obs_bandpasses[obsno]]
         new.obs_times = [self.obs_times[obsno]]
@@ -920,7 +929,7 @@ class Photons:
         return _np.sum(obs_times[:, 1] - obs_times[:, 0])
 
 
-    def time_per_bin(self, bin_edges, time_range=None):
+    def time_per_bin(self, bin_edges, time_ranges=None):
         """
 
         Parameters
@@ -932,6 +941,10 @@ class Photons:
         t
         """
         bin_edges = _np.asarray(bin_edges)
+        if time_ranges is not None:
+            time_ranges = _np.asarray(time_ranges)
+            if time_ranges.ndim != 2:
+                time_ranges = _np.reshape(time_ranges, [-1, 2])
 
         # parse left and right bin edges
         if bin_edges.ndim == 1:
@@ -946,11 +959,10 @@ class Photons:
         t = _np.zeros(len(w0), 'f8')
         for tranges, wranges  in zip(self.obs_times, self.obs_bandpasses):
             tranges = _np.copy(tranges)
-            if time_range is not None:
-                if tranges[0,0] < time_range[0]:
-                    tranges[0,0] = time_range[0]
-                if tranges[-1,1] > time_range[1]:
-                    tranges[-1,1] = time_range[1]
+            if time_ranges is not None:
+                tranges = utils.rangeset_intersect(time_ranges, tranges, presorted=True)
+            if len(tranges) == 0:
+                continue
 
             # total exposure time for observation
             dt = _np.sum(tranges[:,1] - tranges[:,0])
@@ -1015,12 +1027,10 @@ class Photons:
             t = t.to(_u.s)
         t = _time.TimeDelta(t.value, format='sec')
         return self.time_datum + t
+    #endregion
 
 
-
-
-    # --------
-    # HIDDEN METHODS
+    #region HIDDEN METHODS
     def _get_proper_key(self, key):
         """
 
@@ -1196,7 +1206,7 @@ class Photons:
                 if n == 0:
                     continue
                 start, stop = mid - n*dt/2.0, mid + n*dt/2.0
-                obs_bins = _np.arange(start, stop+dt, dt)
+                obs_bins = _np.arange(start, stop+dt/2.0, dt)
                 if bin_method == 'partial':
                     obs_bins[[0,-1]] = rng
 
@@ -1243,14 +1253,7 @@ class Photons:
         return inbands
 
 
-    def _in_range(self, key, rng=None):
-        if rng is not None:
-            return (self[key] >= rng[0]) & (self[key] <= rng[1])
-        else:
-            return _np.ones(len(self), bool)
-
-
-    def _histogram(self, dim, bin_edges, rng, fluxed, energy_units, filter=None):
+    def _histogram(self, dim, bin_edges, rng, fluxed, energy_units, filter=None, background=False):
         """
 
         Parameters
@@ -1268,7 +1271,15 @@ class Photons:
         """
 
         x = self[dim]
-        weights = self._full_weights(fluxed, energy_units)
+        if background:
+            if 'r' not in self:
+                raise ValueError('Background region not defined for this photon set.')
+            if fluxed:
+                raise ValueError('Does not make sense to compute a fluxed background lightcurve.')
+            weights = self['r'] < 0
+            weights = weights.astype('f4')
+        else:
+            weights = self._full_weights(fluxed, energy_units)
 
         if rng is None:
             rng = bin_edges[[0,-1]]
@@ -1304,6 +1315,7 @@ class Photons:
 
         return counts, errors
 
+    #endregion
 
 
 def _groom_bins(bins, rng):
