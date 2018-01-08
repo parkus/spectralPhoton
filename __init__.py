@@ -6,6 +6,13 @@ import astropy.constants as _const
 import numpy as _np
 import matplotlib.pyplot as plt
 import utils
+from astropy import table as _table
+import copy as _copy
+from crebin import rebin as _rebin
+from matplotlib import pyplot as _pl
+
+
+
 
 
 def _FITSformat(dtype):
@@ -480,7 +487,7 @@ class Photons:
             self.photons.add_column(n_col)
 
 
-    def divvy(self, ysignal, yback=[], order=None):
+    def divvy(self, ysignal, yback=(), order=None):
         """
         Provides a simple means of divyying photons into signal and background regions (and adding/updating the
         associated 'r' column, by specifying limits of these regions in the y coordinate.
@@ -673,7 +680,13 @@ class Photons:
 
         # construct time bins. this is really where this method is doing a lot of work for the user in dealing with
         # the exposures and associated gaps
-        edges, valid_bins = self._construct_time_bins(time_step, bin_method, time_range, bandpasses)
+        if hasattr(time_step, '__iter__'):
+            edges = _np.unique(_np.ravel(time_step))
+            mids = utils.midpts(edges)
+            valid_times = utils.rangeset_intersect(_np.vstack(self.obs_times), _np.array(time_step))
+            valid_bins = utils.inranges(mids, valid_times)
+        else:
+            edges, valid_bins = self._construct_time_bins(time_step, bin_method, time_range, bandpasses)
 
         inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
@@ -693,6 +706,10 @@ class Photons:
                 a[betweens] = _np.nan
         else:
             counts, errors, dt, bin_start, bin_stop = [a[valid_bins] for a in [counts, errors, dt, bin_start, bin_stop]]
+
+        if counts.size == 0:
+            return [_np.array([]) for _ in range(5)]
+
 
         # divide by exposure time to get rates
         rates, errors = counts/dt, errors/dt
@@ -767,7 +784,7 @@ class Photons:
                 if nan_between:
                     curve = [_np.append(a, _np.nan) for a in curve]
                 curves.append(curve)
-            
+
         # sneaky code to take the list of curves and combine them
         if len(curves) > 0:
             bin_start, bin_stop, bin_midpt, rates, error = [_np.hstack(a) for a in zip(*curves)]
@@ -827,6 +844,14 @@ class Photons:
         rates, errors = map(_np.array, zip(*spectra))
 
         return starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
+
+    def average_rate(self, bands, timeranges=None, fluxed=False, energy_units='erg'):
+        if timeranges is None:
+            timeranges = _np.vstack(self.obs_times)
+        t0, t1, t, f, e = self.lightcurve(timeranges, bands, fluxed=fluxed, energy_units=energy_units)
+        dt = t1 - t0
+        return _np.sum(dt * f) / _np.sum(dt)
+
     #endregion
 
 
@@ -878,7 +903,8 @@ class Photons:
         counts, xbins, ybins = _np.histogram2d(self[xax], self[yax], bins=bins, weights=weights)
 
         if type(scalefunc) in [int, float]:
-            scalefunc = lambda x: x**scalefunc
+            pow = scalefunc
+            scalefunc = lambda x: x**pow
         if scalefunc is None:
             scaled_counts = counts
         else:
@@ -945,6 +971,7 @@ class Photons:
             time_ranges = _np.asarray(time_ranges)
             if time_ranges.ndim != 2:
                 time_ranges = _np.reshape(time_ranges, [-1, 2])
+            time_ranges = time_ranges[_np.argsort(time_ranges[:,0]), :]
 
         # parse left and right bin edges
         if bin_edges.ndim == 1:
@@ -1082,23 +1109,23 @@ class Photons:
         ymin = self['y'].min()
         if ymax < edges.max() or ymin > edges.min():
             raise ValueError('Extraction ribbons include areas beyond the range of the counts.')
-    
+
         # find where signal band is in sorted edges
         ysignal_mids = (ysignal[:,0] + ysignal[:,1])/2.0
         isignal = _np.searchsorted(edges, ysignal_mids)
-    
+
         if yback is not None:
             # find area ratio of signal to background
             area_signal = _np.sum(_np.diff(ysignal, axis=1))
             area_back = _np.sum(_np.diff(yback, axis=1))
             area_ratio = float(area_signal)/area_back
-    
+
             # find where background bands are in the sorted edges
             yback_mids = (yback[:,0] + yback[:,1]) / 2.0
             iback = _np.searchsorted(edges, yback_mids)
         else:
             iback, area_ratio = None, None
-    
+
         return edges, isignal, iback, area_ratio
 
 
@@ -1115,7 +1142,7 @@ class Photons:
             raise ValueError('Photons must have effective area data to permit the computation of fluxes.')
 
         energy = _const.h * _const.c / self['w']
-        energy = energy.to(units)
+        energy = energy.to(units).value
         epera = energy / self['a']
         return epera
 
@@ -1215,7 +1242,9 @@ class Photons:
             valid.extend(range(marker, marker+len(obs_bins)-1))
             marker += len(obs_bins)
 
-        return map(_np.array, [edges, valid])
+        edges = _np.array(edges)
+        valid = _np.array(valid, long)
+        return edges, valid
 
 
     def _bandpass_filter(self, bandpasses, check_coverage=True):
@@ -1292,6 +1321,7 @@ class Photons:
 
         x = x[keep]
         weights = weights[keep]
+        weights[_np.isnan(weights)] = 0.
 
         counts = _np.histogram(x, bins=bin_edges, range=rng, weights=weights)[0]
         variances = _np.histogram(x, bins=bin_edges, range=rng, weights=weights**2)[0]
@@ -1315,6 +1345,7 @@ class Photons:
 
         return counts, errors
 
+    #endregion
     #endregion
 
 
@@ -1407,30 +1438,354 @@ def _inbins(bins, values):
     return bin_no % 2 == 1
 
 
+class Spectrum(object):
+    file_suffix = '.spec'
+    table_write_format = 'ascii.ecsv'
+
+    # these prevent recursion with __getattr__, __setattr__ when object is being initialized
+    ynames = []
+    other_data = {}
+
+    def __init__(self, w, y, err=None, dw='guess', yname='y', other_data=None, references=None, notes=None, wbins=None):
+        """
+
+        Parameters
+        ----------
+        w : wavelength array
+        y : y data array (e.g. flux, cross-section)
+        err : error array
+        dw : bin width array. Can also be 'guess' if you want the widths to be inferred from midpoint spacings,
+            but note that this process is ambiguous and it is better to provide explicit dw values if possible.
+        yname : str | list
+            name for the primary dependent data ('flux', 'x', ...). data will be accessible as an attribute as spec.y or
+            spec.y_name. can provide multiple if you want aliases.
+        other_data : dict or astropy table
+            Additional data associated with points/bins.
+        references : list
+            References for spectrum.
+        notes : list
+            Notes on spectrum.
+        wbins : array
+            Wavelength bin edges. Overrides w and dw.
+
+        """
+
+        if wbins is None:
+            if type(dw) is str and dw == 'guess':  # first part avoids comparing array to string
+                wbins = utils.wave_edges(w.value) * w.unit
+            else:
+                dw = dw.to(w.unit)
+                wbins = utils.edges_from_mids_diffs(w.value, dw.value) * w.unit
+                if not _np.allclose(utils.midpts(wbins).value, w.value):
+                    raise ValueError('The bin width (dw) values you provided are not consistent with the wavelength '
+                                     'midpoints (w).')
+        self.wbins = wbins
+        self.y = y
+        self.e = self.err = self.error = err
+        self.ynames = utils.as_list(yname)
+        self.other_data = {} if other_data is None else other_data
+        self.references = [] if references is None else references
+        self.notes = [] if notes is None else notes
+
+    #region properties
+    dw = property(lambda self: _np.diff(self.wbins))
+    w = property(lambda self: utils.midpts(self.wbins))
+    integral = property(lambda self: _np.sum(self.dw * self.y).decompose())
+    #endregion
+
+    #region magic
+    def __getattr__(self, key):
+        if key in self.ynames:
+            return self.y
+        elif key in self.other_data:
+            return self.other_data[key]
+        else:
+            raise AttributeError('No {} data associated with this spectrum. Use add_data if you want to add it.'
+                                 ''.format(key))
+
+    def __setattr__(self, key, value):
+        if key in self.ynames:
+            self.__dict__['y'] = value
+        elif key in self.other_data:
+            od = self.__dict__['other_data'][key] = value
+        else:
+            self.__dict__[key] = value
+
+    def __str__(self):
+        raise NotImplementedError()
+
+    def __repr__(self):
+        tbl = self.to_table()
+        return tbl.__repr__()
+
+    def __len__(self):
+        return len(self.y)
+    #endregion
+
+    #region utilities
+
+    #endregion
+
+    #region modification methods
+    def add_note(self, note):
+        self.notes.append(note)
+
+    def add_data(self, name, data):
+        self.other_data[name] = data
+
+    def rebin(self, newbins, other_data_bin_methods='avg'):
+        ob = self.wbins.to(newbins.unit).value
+        nb = newbins.value
+
+        y = self.y.value
+        ynew = _rebin.rebin(nb, ob, y, 'avg') * self.y.unit
+
+        if self.e is None:
+            enew = None
+        else:
+            E = self.e.value * _np.diff(ob)
+            V = E ** 2
+            Vnew = _rebin.rebin(nb, ob, V, 'sum')
+            enew = _np.sqrt(Vnew) / _np.diff(nb) * self.e.unit
+
+        if self.other_data is None:
+            other_data_new = None
+        else:
+            if type(other_data_bin_methods) is str:
+                methods = [other_data_bin_methods] * len(self.other_data)
+            else:
+                methods = other_data_bin_methods
+            other_data_new = {}
+            for key, method in zip(self.other_data, methods):
+                d = self.other_data[key]
+                other_data_new[key] = _rebin.rebin(nb, ob, d.value, method) * d.unit
+
+        notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
+        newspec = Spectrum(None, ynew, err=enew, yname=self.ynames, notes=notes, references=refs, wbins=newbins,
+                           other_data=other_data_new)
+        # this might be bad code, but this allows rebin to be used by subclasses (though they should redefine it if
+        # they have extra attributes that should be changed when rebinned, of course)
+        # FIXME actually I don't think this even works...
+        newspec.__class__ = self.__class__
+        return newspec
+
+    def clip(self, wavemin, wavemax):
+    #endregion
+
+        keep = (self.wbins[1:] > wavemin) & (self.wbins[:-1] < wavemax)
+
+        y = self.y[keep]
+
+        wbins = self.wbins[:-1][keep]
+        wmax = self.wbins[1:][keep][-1]
+        wbins = _np.append(wbins.value, wmax.value) * self.wbins.unit
+        if wbins[0] < wavemin:
+            wbins[0] = wavemin
+        if wbins[-1] > wavemax:
+            wbins[-1] = wavemax
+
+        if self.other_data is None:
+            other_data = None
+        else:
+            other_data = {}
+            for key, a in self.other_data.items():
+                other_data[key] = a[keep]
+
+        if self.e is None:
+            e = None
+        else:
+            e = self.e[keep]
+
+        notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
+        return Spectrum(None, y, err=e, yname=self.ynames, notes=notes, references=refs, wbins=wbins,
+                        other_data=other_data)
+    #endregion
+
+    #region analysis
+    def integrate(self, *args):
+        if len(args) == 1:
+            wbin = args[0]
+            try:
+                wbin.to(self.w.unit)
+            except AttributeError, _u.UnitConversionError:
+                raise ValueError('Input must be astropy quantity with units convertable to that of spectrum.')
+        elif len(args) == 2:
+            w0, w1 = args
+            wbin = [w0.value, w1.to(w0.unit).value] * w0.unit
+        else:
+            raise ValueError('Input must either be [[w0,w1],[w2,w3],...], [w0,w1], or w0, w1.')
+        if _np.any(wbin < self.w[0]) or _np.any(wbin > self.w[-1]):
+            raise ValueError('Integration range is beyond spectrum range.')
+        wbin = wbin.reshape(-1, 2)
+        if _np.any(wbin[1:,0] <= wbin[:-1,1]):
+            raise ValueError('No overlapping or touching ranges allowed.')
+        dw = _np.diff(wbin, 1).squeeze()
+        newspec = self.rebin(wbin.ravel())
+        flux_dens, err_dens = newspec.y[::2], newspec.e[::2]
+        fluxes, errs = flux_dens*dw, err_dens*dw
+        flux, error = _np.sum(fluxes), utils.quadsum(errs)
+        return flux, error
+
+    def plot(self, *args, **kw):
+        ykey = kw.pop('y', 'y')
+        ax = kw.pop('ax', _pl.gca())
+        draw = kw.pop('draw', True)
+        wunit = kw.pop('wunit', None)
+        yunit = kw.pop('yunit', None)
+        vref = kw.pop('vref', None)
+        vunit = kw.pop('vunit', None)
+
+        w, y = [_np.empty(2 * len(self)) for _ in range(2)]
+        w[::2], w[1::2] = self.wbins[:-1], self.wbins[1:]
+        y[::2] = getattr(self, ykey)
+        y[1::2] = y[::2]
+
+        w = w * self.wbins.unit
+        y = y * self.y.unit
+        if wunit is not None:
+            w = w.to(wunit)
+        if yunit is not None:
+            y = y.to(yunit)
+
+        if vref is None:
+            ln = ax.plot(w, y, *args, **kw)
+        else:
+            v = (w - vref)/vref * _const.c
+            if vunit is None:
+                v = v.to('km s-1')
+            else:
+                v = v.to(vunit)
+            ln = ax.plot(v, y, *args, **kw)
+        if draw:
+            _pl.draw()
+
+        return ln
+    #endregion
+
+    #region create, import, and export
+    def to_table(self):
+        data = [self.w, self.dw, self.y]
+        names = ['w', 'dw', 'y']
+        if self.e is not None:
+            data.append(self.e)
+            names.append('err')
+        if self.other_data is not None:
+            for key, val in self.other_data.items():
+                data.append(val)
+                names.append(key)
+        tbl = _table.Table(data=data, names=names)
+        tbl.meta['ynames'] = self.ynames
+        tbl.meta['notes'] = self.notes
+        tbl.meta['references'] = self.references
+        return tbl
+
+
+    def write(self, path, overwrite=False):
+        if not path.endswith(Spectrum.file_suffix):
+            path += Spectrum.file_suffix
+
+        tbl = self.to_table()
+        tbl.write(path, format=Spectrum.table_write_format, overwrite=overwrite)
+
+
+    @classmethod
+    def read_x1d(cls, path, keep_extra_fields=False, keep_header=True):
+        h = _fits.open(path)
+
+        std_names = ['wavelength', 'flux', 'error']
+        std_data = {}
+        other_data = {}
+        hdr = h[1].header
+        keys = hdr.keys()
+        keys = filter(lambda s: 'TTYPE' in s, keys)
+        for key in keys:
+            name = hdr[key].lower()
+            vec = h[1].data[name]
+            if vec.ndim < 2 or vec.shape[1] == 1:
+                continue
+            unit_key = key.replace('TYPE', 'UNIT')
+            units = _u.Unit(hdr[unit_key]) if unit_key in hdr else _u.Unit('')
+            vec = vec * units
+            if name in std_names:
+                std_data[name] = vec
+            elif keep_extra_fields:
+                other_data[name] = vec
+
+        ynames = ['f', 'flux']
+        notes = h[0].header + h[1].header if keep_header else None
+
+        specs = []
+        for i in range(len(std_data['wavelength'])):
+            w, f, e = [std_data[s][i] for s in std_names]
+            wbins = utils.wave_edges(w.value) * w.unit
+            assert _np.allclose(utils.midpts(wbins.value), w.value)
+            if keep_extra_fields:
+                other_dict = {}
+                for key in other_data:
+                    other_dict[key] = other_data[key][i]
+            else:
+                other_dict = None
+            spec = Spectrum(None, f, e, wbins=wbins, notes=notes, other_data=other_dict, yname=ynames)
+            specs.append(spec)
+
+        return specs
+
+
+    @classmethod
+    def read(cls, path_or_file_like):
+        """
+        Read in a spectrum.
+
+        Parameters
+        ----------
+        path_or_file_like
+
+        Returns
+        -------
+        Spectrum object
+        """
+        if type(path_or_file_like) is str and not path_or_file_like.endswith(cls.file_suffix):
+            raise IOError('Can only read {} file.'.format(cls.file_suffix))
+
+        tbl = _table.Table.read(path_or_file_like, format='ascii.ecsv')
+        w, dw, y = [tbl[s].quantity for s in ['w', 'dw', 'y']]
+        tbl.remove_columns(['w', 'dw', 'y'])
+        if 'err' in tbl.colnames:
+            e = tbl['err']
+            tbl.remove_column('e')
+        else:
+            e = None
+
+        refs = tbl.meta['references']
+        notes = tbl.meta['notes']
+        ynames = tbl.meta['ynames']
+
+        if len(tbl.colnames) > 0:
+            other_data = {}
+            for key in tbl.colnames:
+                other_data[key] = tbl[key].quantity
+        else:
+            other_data = None
+
+        spec = Spectrum(w, y, e, dw=dw, other_data=other_data, yname=ynames, references=refs, notes=notes)
+        return spec
+
+    @classmethod
+    def blackbody(cls, T, wbins):
+        # TODO make better by computing integral over bins
+        w = utils.midpts(wbins)
+        f = _np.pi * 2 * _const.h * _const.c ** 2 / w ** 5 / (_np.exp(_const.h * _const.c / _const.k_B / T / w) - 1)
+        f = f.to('erg s-1 cm-2 AA-1')
+        return Spectrum(None, f, yname=['f', 'flux', 'surface flux'], wbins=wbins)
+    #endregion
+
+    pass
+
+
+
 # import some submodules. I put these down here because they themselves import and use __init__. This is probably
 # bad. Maybe the photons class should be split out from __init__...
 import hst
 
 
-class Spectrum:
-    def __init__(self, edges, density, error):
-        self.edges = self.w = edges
-        self.density = self.f = density
-        self.error = self.e = error
-        self.d = self.dw = _np.diff(edges)
-        self.integral = self.I = self.dw*density
-        self.integral_variance = self.Iv = (self.dw*error)**2
-        self.cum_integral = self.cI =  _np.inster(_np.cumsum(self.I), 0, 0)
-        self.cum_integral_variance = self.cIv =  _np.inster(_np.cumsum(self.Iv), 0, 0)
-
-    def integrate(self, *args):
-        if len(args) == 2:
-            w0, w1 = args
-        elif len(args) == 1:
-            w0, w1 = args[0]
-        I0, I1 = _np.interp([w0, w1], self.w, self.cI)
-        Iv0, Iv1 = _np.interp([w0, w1], self.w, self.cIv)
-        value = I1 - I0
-        error = _np.sqrt(Iv1 - Iv0)
-        return value, error
 

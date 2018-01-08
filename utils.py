@@ -33,6 +33,19 @@ def wave_edges(wave_midpts):
     return _np.array(edges)
 
 
+def edges_from_mids_diffs(w, dw):
+    return _np.append(w - dw/2., w[-1])
+
+
+def as_list(a):
+    if a is None:
+        return None
+    elif type(a) is not list:
+        return [a]
+    else:
+        return a
+
+
 def adaptive_downsample(bin_edges, density, error, min_SN):
     """
 
@@ -186,7 +199,7 @@ def rangeset_intersect(ranges0, ranges1, presorted=False):
     if not presorted:
         rng0, rng1 = [r[_np.argsort(r[:,0])] for r in [rng0, rng1]]
     for rng in [rng0, rng1]:
-        assert _np.all(rng[1:] > rng[:-1])
+        assert _np.all(rng[:,1] > rng[:,0])
 
     l0, r0 = rng0.T
     l1, r1 = rng1.T
@@ -275,3 +288,11 @@ def inranges(values, ranges, inclusive=[False, True]):
         a = (_np.searchsorted(ranges, values) % 2 == 1)
         b = (_np.searchsorted(ranges, values, side='right') % 2 == 1)
         return (a & b)
+
+
+def midpts(x):
+    return (x[1:] + x[:-1])/2.0
+
+
+def quadsum(x):
+    return _np.sqrt(_np.sum(x**2))

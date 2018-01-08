@@ -59,7 +59,7 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
             return readfiles(*zip(*file_pairs))
         elif a_or_b == 'both':
             p = readfiles(*zip(*file_pairs))
-            p.obs_bandpasses = map(_np.vstack, _np.split(p, _np.arange(2, len(p.obs_bandpasses), 2)))
+            p.obs_bandpasses = map(_np.vstack, _np.split(p.obs_bandpasses, _np.arange(2, len(p.obs_bandpasses), 2)))
             p.merge_like_observations()
         else:
             raise ValueError("a_or_b should be one of ['a', 'b', 'both']")
@@ -150,8 +150,8 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
             wave_ranges = wave_ranges[[i], :]
             photons.obs_bandpasses[0] = photons.obs_bandpasses[0][[i], :]
 
-        if hdr['detector'] == 'NUV':
-            raise NotImplementedError('Gotta do some work on this. Fluxing is not working well.')
+        # if hdr['detector'] == 'NUV':
+        #     raise NotImplementedError('Gotta do some work on this. Fluxing is not working well.')
 
         # parse photons. I'm going to use sneaky list comprehensions and such. sorry. this is nasty because
         # supposedly stsci sometimes puts tags into multiple 'EVENTS' extensions
@@ -494,7 +494,7 @@ def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
             segs = [seg]
             orders = [0 if seg == 'A' else 1]
         for order, seg in zip(orders, segs):
-            if traceloc != 'stsci' and det == 'NUV':
+            if not (traceloc == 'stsci' or type(traceloc) in [int, float]) and det == 'NUV':
                 raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
                                           'has not been implemented.')
             if traceloc == 'stsci':
