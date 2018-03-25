@@ -14,7 +14,7 @@ import utils as _utils
 
 # TODO: test with COS NUV data
 
-def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True, flux_bins=2.0,
+def readtagset(directory_or_tagfiles, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, clipends=True, flux_bins=2.0,
                a_or_b='both'):
     """
 
@@ -31,8 +31,12 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
     Photons object
     """
 
-    # find all the tag files and matching x1d files
-    tagfiles, x1dfiles = obs_files(directory)
+    if type(directory_or_tagfiles) is str:
+        # find all the tag files and matching x1d files
+        tagfiles, x1dfiles = obs_files(directory_or_tagfiles)
+    else:
+        tagfiles = directory_or_tagfiles
+        x1dfiles = [_re.sub('(corr)?tag(_[ab])?', 'x1d', tf) for tf in tagfiles]
 
     def readfiles(tagfiles, x1dfiles):
         # start by parsing photons from first observation
@@ -59,8 +63,8 @@ def readtagset(directory, traceloc='stsci', fluxed='tag_vs_x1d', divvied=True, c
             return readfiles(*zip(*file_pairs))
         elif a_or_b == 'both':
             p = readfiles(*zip(*file_pairs))
-            p.obs_bandpasses = map(_np.vstack, _np.split(p.obs_bandpasses, _np.arange(2, len(p.obs_bandpasses), 2)))
             p.merge_like_observations()
+            return p
         else:
             raise ValueError("a_or_b should be one of ['a', 'b', 'both']")
     else:
@@ -183,7 +187,11 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             Aeff = _np.zeros_like(photons['t'])
             for i in segments:
-                Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row=i, order=i, method=fluxed, flux_bins=flux_bins)
+                try:
+                    Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row=i, order=i, method=fluxed, flux_bins=flux_bins)
+                except _utils.LowSNError:
+                    raise _utils.LowSNError('S/N is too low to flux the counts for {} in segment {}.'
+                                            ''.format(x1dfile, 'ABC'[i]))
                 Aeff[photons['o'] == i] = Aeff_i
 
             photons['a'] = Aeff
