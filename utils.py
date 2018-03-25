@@ -1,5 +1,10 @@
 import numpy as _np
 
+
+class LowSNError(BaseException):
+    pass
+
+
 def wave_edges(wave_midpts):
     """
     Reconstructs the wavelength bins used in the x1d.
@@ -82,7 +87,7 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     I = _np.sum(y*d[_np.newaxis,:], axis=1)
     E = _np.sqrt(_np.sum((e*d[_np.newaxis,:])**2, axis=1))
     if any(I/E < min_SN):
-        raise ValueError('At least one spectrum does not have an integrated S/N exceeding the min_SN setting of {}.'
+        raise LowSNError('At least one spectrum does not have an integrated S/N exceeding the min_SN setting of {}.'
                          ''.format(min_SN))
 
     # iteratively add pairs of bins with their neighbors (alternating which neighbor)
