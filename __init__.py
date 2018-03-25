@@ -132,8 +132,8 @@ class Photons:
 
     def merge_like_observations(self, clip_band_overlap=False):
         """
-        Merge observations that have the same exposure times. If their bandpasses ranges overlap, then the photons
-        in the overlap get de-weighted due to he "extra" observing time that isn't otherwise accounted for.
+        Merge observations that have the same exposure times. If their bandpass ranges overlap, then the photons
+        in the overlap get de-weighted due to the "extra" observing time that isn't otherwise accounted for.
 
         Returns
         -------
@@ -150,7 +150,7 @@ class Photons:
                 bands_ref = self.obs_bandpasses[i]
                 bands = [self.obs_bandpasses[j] for j in same_obs]
                 if len(reduce(utils.rangeset_intersect, bands, bands_ref)) > 0 and not clip_band_overlap:
-                    raise ValueError('Cannot merge observations that overlap in wavlength.')
+                    raise ValueError('Cannot merge observations that overlap in wavelength.')
 
                 for j in same_obs:
                     self.obs_metadata[i] += self.obs_metadata[j]
@@ -561,7 +561,8 @@ class Photons:
 
 
     # region ANALYSIS METHODS
-    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all', time_ranges=None):
+    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all', time_ranges=None,
+                 bin_method='elastic'):
         """
 
         Parameters
@@ -586,7 +587,7 @@ class Photons:
             if time_ranges is not None:
                 filter  = filter & utils.inranges(self['t'], time_ranges)
 
-        bin_edges = self._groom_wbins(bins, waverange)
+        bin_edges = self._groom_wbins(bins, waverange, bin_method=bin_method)
         counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter)
 
         # divide by bin widths and exposure time to get rates
@@ -716,10 +717,6 @@ class Photons:
 
         # bin midpoints
         bin_midpts = (bin_start + bin_stop)/2.0
-
-        # replace any zero errors with minimum error
-        zero_err = (errors == 0)
-        errors[zero_err] = _np.min(errors[~zero_err])
 
         return bin_start, bin_stop, bin_midpts, rates, errors
 
@@ -1170,7 +1167,7 @@ class Photons:
             return weights
 
 
-    def _groom_wbins(self, wbins, wrange=None):
+    def _groom_wbins(self, wbins, wrange=None, bin_method='elastic'):
         """
 
         Parameters
@@ -1185,12 +1182,12 @@ class Photons:
         if wrange is None:
             wranges = _np.vstack(self.obs_bandpasses)
             wrange = [wranges.min(), wranges.max()]
-        return _groom_bins(wbins, wrange)
+        return _groom_bins(wbins, wrange, bin_method=bin_method)
 
 
     def _groom_ybins(self, ybins):
         rng = [self['y'].min(), self['y'].max()]
-        return _groom_bins(ybins, rng)
+        return _groom_bins(ybins, rng, bin_method='partial')
 
 
     def _construct_time_bins(self, time_step, bin_method, time_range=None, bandpasses=None):
@@ -1335,7 +1332,7 @@ class Photons:
             if any(zeros):
                 signal_counts[zeros] = 1.0
                 bin_midpts = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-                signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts, signal_counts_weighted)
+                signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts[~zeros], signal_counts_weighted[~zeros])
             avg_weight = signal_counts_weighted/signal_counts
             min_variance = avg_weight**2
             replace = (counts <= 0) & (variances < min_variance)
@@ -1346,20 +1343,27 @@ class Photons:
         return counts, errors
 
     #endregion
-    #endregion
 
 
-def _groom_bins(bins, rng):
+def _groom_bins(bins, rng, bin_method='full'):
     # if bins is a float, parse the full range of observations into bins using that float as the bin width,
-    # with bins on each end only partially covered by observations
+    # with unused "leftovers" on each end
+    assert bin_method in ['full', 'elastic', 'partial']
     if isinstance(bins, float):
-        dw = bins
-        span = rng[1] - rng[0]
-        wmid = (rng[0] + rng[1])/2.0
-        n = _np.ceil(span / bins)
-        w0 = wmid - n/2.0*dw
-        w1 = wmid + n/2.0*dw
-        edges = _np.arange(w0, w1+dw, dw)
+        dx = bins
+        x0, x1 = rng
+        if (x1 - x0) % dx == 0:
+            return  _np.arange(x0, x1+dx, dx)
+        elif bin_method == 'elastic':
+            n = int(round((x1 - x0) / dx))
+            return _np.linspace(x0, x1, n+1)
+        else:
+            edges_left_aligned =_np.arange(x0, x1, dx)
+            edges_full = edges_left_aligned + (x1 - edges_left_aligned[-1])/2.0
+            if bin_method == 'full':
+                return edges_full
+            if bin_method == 'partial':
+                return _np.insert(edges_full, [0, len(edges_full)], [edges_full[0]-dx, edges_full[-1]+dx])
 
     # if bins is an integer, divide the full range observations into that many bins
     elif isinstance(bins, int):
