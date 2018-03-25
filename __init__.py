@@ -1708,7 +1708,12 @@ class Spectrum(object):
             if vec.ndim < 2 or vec.shape[1] == 1:
                 continue
             unit_key = key.replace('TYPE', 'UNIT')
-            units = _u.Unit(hdr[unit_key]) if unit_key in hdr else _u.Unit('')
+            units_str = hdr[unit_key] if unit_key in hdr else ''
+            if units_str == 'Angstroms':
+                units_str = 'Angstrom'
+            if units_str == 'Counts/s':
+                units_str = 'count s-1'
+            units = _u.Unit(units_str)
             vec = vec * units
             if name in std_names:
                 std_data[name] = vec
