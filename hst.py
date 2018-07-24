@@ -1,3 +1,4 @@
+import data_structures
 from astropy.io import fits as _fits
 import astropy.time as _time
 import astropy.units as _u
@@ -8,7 +9,6 @@ import numpy as _np
 import scipy.interpolate as _interp
 import os as _os
 import re as _re
-import __init__ as _sp
 import utils as _utils
 
 
@@ -116,7 +116,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
     x1d = _fits.open(x1dfile) if x1dfile is not None else None
 
     # empty photons object
-    photons = _sp.Photons()
+    photons = data_structures.Photons()
 
     # parse observation metadata
     hdr = tag[0].header + tag[1].header
@@ -329,7 +329,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     if traceloc == 'lya':
         xmx = _np.nanmedian(_np.argmax(f, 1))
         redsum = _np.nansum(f[:, xmx+4:xmx+14], 1)
-        smoothsum = _sp._smooth_sum(redsum, extrsize)/float(extrsize)
+        smoothsum = data_structures._smooth_sum(redsum, extrsize) / float(extrsize)
         traceloc = _np.argmax(smoothsum) + extrsize/2
 
     # convert everything to integers so we can make slices
