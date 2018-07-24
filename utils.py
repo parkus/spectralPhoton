@@ -301,3 +301,84 @@ def midpts(x):
 
 def quadsum(x):
     return _np.sqrt(_np.sum(x**2))
+
+
+def polyfit_binned(bins, y, yerr, order):
+    """Generates a function for the maximum likelihood fit to a set of binned
+    data.
+
+    Parameters
+    ----------
+    bins : 2D array-like, shape Nx2
+        Bin edges where bins[0] gives the left edges and bins[1] the right.
+    y : 1D array-like, length N
+        data, the integral of some value over the bins
+    yerr : 1D array-like, length N
+        errors on the data
+    order : int
+        the order of the polynomial to fit
+
+    Returns
+    -------
+    coeffs : 1D array
+        coefficients of the polynomial, highest power first (such that it
+        may be used with numpy.polyval)
+    covar : 2D array
+        covariance matrix for the polynomial coefficients
+    fitfunc : function
+        Function that evaluates y and yerr when given a new bin using the
+        maximum likelihood model fit.
+    """
+    N, M = order, len(y)
+    if type(yerr) in [int,float]: yerr = yerr*np.ones(M)
+    bins = _np.asarray(bins)
+    assert not _np.any(yerr == 0.0)
+
+    #some prelim calcs. all matrices are (N+1)xM
+    def prelim(bins, M):
+        a, b = bins[:,0], bins[:,1]
+        apow = _np.array([a**(n+1) for n in range(N+1)])
+        bpow = _np.array([b**(n+1) for n in range(N+1)])
+        bap = bpow - apow
+        frac = _np.array([_np.ones(M)/(n+1) for n in range(N+1)])
+        return bap, frac
+
+    bap, frac = prelim(bins, M)
+    var = _np.array([_np.array(yerr)**2]*(N+1))
+    ymat = _np.array([y]*(N+1))
+
+    #build the RHS vector
+    rhs = _np.sum(ymat*bap/var, 1)
+
+    #build the LHS coefficient matrix
+    nmat = bap/var #N+1xM (n,m)
+    kmat = bap.T*frac.T #MxN+1 (m,k)
+    lhs = _np.dot(nmat,kmat)
+
+    #solve for the polynomial coefficients
+    c = _np.linalg.solve(lhs, rhs)
+
+    #compute the inverse covariance matrix (same as Hessian)
+    H = _np.dot(nmat*frac,kmat)
+    cov = _np.linalg.inv(H)
+
+    #construct the function to compute model values and errors
+    def f(bins):
+        M = len(bins)
+        bap, frac = prelim(bins, M)
+
+        #values
+        cmat = _np.transpose([c]*M)
+        y = _np.sum(bap*cmat*frac, 0)
+
+        #errors
+        T = bap*frac
+        cT = _np.dot(cov, T)
+        #to avoid memory overflow, compute diagonal elements directly instead
+        #of dotting the matrices
+        yvar = _np.sum(T*cT, 0)
+        yerr = _np.sqrt(yvar)
+
+        return y, yerr
+
+    return c[::-1], cov[::-1,::-1], f

@@ -561,14 +561,14 @@ class Photons:
 
 
     # region ANALYSIS METHODS
-    def spectrum(self, bins, waverange=None, fluxed=False, energy_units='erg', order='all', time_ranges=None,
+    def spectrum(self, bins, waveranges=None, fluxed=False, energy_units='erg', order='all', time_ranges=None,
                  bin_method='elastic'):
         """
 
         Parameters
         ----------
         bins
-        waverange
+        waveranges
         fluxed
         energy_units
         order
@@ -587,8 +587,13 @@ class Photons:
             if time_ranges is not None:
                 filter  = filter & utils.inranges(self['t'], time_ranges)
 
-        bin_edges = self._groom_wbins(bins, waverange, bin_method=bin_method)
-        counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter)
+        bin_edges, i_gaps = self._groom_wbins(bins, waveranges, bin_method=bin_method)
+        counts, errors = self._histogram('w', bin_edges, None, fluxed, energy_units, filter)
+
+        # add nans if there are gaps
+        if i_gaps is not None:
+            counts[i_gaps] = _np.nan
+            errors[i_gaps] = _np.nan
 
         # divide by bin widths and exposure time to get rates
         bin_exptime = self.time_per_bin(bin_edges, time_ranges=time_ranges)
@@ -791,8 +796,8 @@ class Photons:
         return bin_start, bin_stop, bin_midpt, rates, error
 
 
-    def spectrum_frames(self, bins, time_step, waverange=None, time_range=None, bin_method='full', fluxed=False,
-                        energy_units='erg'):
+    def spectrum_frames(self, bins, time_step, waveranges=None, time_range=None, w_bin_method='full',
+                        t_bin_method='full', fluxed=False, energy_units='erg'):
         """
 
         Parameters
@@ -809,16 +814,11 @@ class Photons:
         -------
         starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
         """
+        kws = dict(fluxed=fluxed, energy_units=energy_units)
 
-        # groom wavelength bins
-        bin_edges = self._groom_wbins(bins, waverange)
-        bin_midpts = (bin_edges[1:] + bin_edges[:-1])/2.0
-        bin_widths = _np.diff(bin_edges)
-
-        # check that wavelength bins are fully within ranges of observations
-        within_obs = _np.any(self.check_wavelength_coverage([bin_edges[[0,-1]]]))
-        if not within_obs:
-            raise ValueError('Bins must fall within the wavelength range of at least one observation.')
+        # make wbins ahead of time so this doesn't happen in loop
+        bin_edges, i_gaps = self._groom_wbins(bins, waveranges, bin_method=w_bin_method)
+        kws['bins'] = bin_edges
 
         # get start and stop of all the time steps
         if hasattr(time_step, '__iter__'):
@@ -827,20 +827,52 @@ class Photons:
                   'be ignored.'
             starts, stops = _np.asarray(time_step).T
         else:
-            time_edges, valid_time_bins = self._construct_time_bins(time_step, bin_method, time_range)
+            time_edges, valid_time_bins = self._construct_time_bins(time_step, t_bin_method, time_range)
             starts, stops = time_edges[:-1][valid_time_bins], time_edges[1:][valid_time_bins]
         time_midpts = (starts + stops)/2.0
 
         spectra = []
         for time_range in zip(starts, stops):
-            in_time_range = utils.inranges(self['t'], time_range)
-            counts, errors = self._histogram('w', bin_edges, waverange, fluxed, energy_units, filter=in_time_range)
-            bintimes = self.time_per_bin(bin_edges, time_range)
-            rates, errors = counts/bintimes/bin_widths, errors/bintimes/bin_widths
-            spectra.append([rates, errors])
-        rates, errors = map(_np.array, zip(*spectra))
+            kws['time_ranges'] = time_range
+            spectra.append(self.spectrum(**kws))
+        bin_edges, bin_midpts, rates, errors = map(_np.array, zip(*spectra))
+        rates[:,i_gaps] = _np.nan
+        errors[:,i_gaps] = _np.nan
 
         return starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
+
+    def continuum_subtracted_lightcurves(self, dt, dw, continuum_bands, lc_bands, poly_order, fluxed=False,
+                                         energy_units='erg', time_range=None, w_bin_method='elastic',
+                                         t_bin_method='elastic'):
+        kws = dict(fluxed=fluxed, energy_units=energy_units)
+
+        t0, t1, t, we, w, f, e = self.spectrum_frames(dw, dt, waveranges=continuum_bands, w_bin_method=w_bin_method,
+                                                      t_bin_method=t_bin_method, time_range=time_range, **kws)
+        tbins = _np.array([t0, t1]).T
+        good = ~_np.isnan(f[0])
+        wbins = _np.array([we[0,:-1][good], we[0,1:][good]]).T
+        polyfuncs = []
+        for i in range(len(t)):
+            _, _, pf = utils.polyfit_binned(wbins, f[i,good], e[i,good], poly_order)
+            polyfuncs.append(pf)
+
+        # tf, cf, lf for total flux, continuum flux, line flux
+        lfs, les = [], []
+        for band in lc_bands:
+            _, _, _, tf, te = self.lightcurve(tbins, band, bin_method=t_bin_method, **kws)
+            lf, le = [_np.zeros_like(tf) for _ in range(2)]
+            for i in range(len(t)):
+                cf, cfe = polyfuncs[i](band)
+                cf = _np.sum(cf)
+                cfe = _np.sqrt(_np.sum(cfe**2))
+                lf[i] = tf[i] - cf
+                le[i] = _np.sqrt(te[i]**2 + cfe**2)
+            lfs.append(lf)
+            les.append(le)
+
+        return t0, t1, t, lfs, les
+
+
 
     def average_rate(self, bands, timeranges=None, fluxed=False, energy_units='erg'):
         if timeranges is None:
@@ -1167,22 +1199,30 @@ class Photons:
             return weights
 
 
-    def _groom_wbins(self, wbins, wrange=None, bin_method='elastic'):
+    def _groom_wbins(self, wbins, wranges=None, bin_method='elastic'):
         """
 
         Parameters
         ----------
         wbins
-        wrange
+        wranges
 
         Returns
         -------
         wbins
         """
-        if wrange is None:
+        if wranges is None:
             wranges = _np.vstack(self.obs_bandpasses)
-            wrange = [wranges.min(), wranges.max()]
-        return _groom_bins(wbins, wrange, bin_method=bin_method)
+            wranges = [wranges.min(), wranges.max()]
+        if hasattr(wranges[0], '__iter__'):
+            bin_groups, igaps = [], [0]
+            for wrange in wranges:
+                _wbins = _groom_bins(wbins, wrange, bin_method)
+                igaps.append(igaps[-1] + len(_wbins))
+                bin_groups.append(_wbins)
+            igaps = _np.array(igaps[1:-1]) - 1
+            return _np.hstack(bin_groups), igaps
+        return _groom_bins(wbins, wranges, bin_method=bin_method), None
 
 
     def _groom_ybins(self, ybins):
@@ -1325,18 +1365,21 @@ class Photons:
 
         # make sure zero or negative-count bins have conservative errors
         if _np.any(counts <= 0):
-            signal = self['r'][keep] > 0 if  'r' in self else _np.ones(len(x), bool)
-            signal_counts = _np.histogram(x[signal], bins=bin_edges, range=rng)[0]
-            signal_counts_weighted = _np.histogram(x[signal], bins=bin_edges, range=rng, weights=weights[signal])[0]
-            zeros = (signal_counts == 0)
-            if any(zeros):
-                signal_counts[zeros] = 1.0
-                bin_midpts = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-                signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts[~zeros], signal_counts_weighted[~zeros])
-            avg_weight = signal_counts_weighted/signal_counts
-            min_variance = avg_weight**2
-            replace = (counts <= 0) & (variances < min_variance)
-            variances[replace] = min_variance[replace]
+            if background:
+                variances[variances == 0] = 1
+            else:
+                signal = self['r'][keep] > 0 if 'r' in self else _np.ones(len(x), bool)
+                signal_counts = _np.histogram(x[signal], bins=bin_edges, range=rng)[0]
+                signal_counts_weighted = _np.histogram(x[signal], bins=bin_edges, range=rng, weights=weights[signal])[0]
+                zeros = (signal_counts == 0)
+                if any(zeros):
+                    signal_counts[zeros] = 1.0
+                    bin_midpts = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+                    signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts[~zeros], signal_counts_weighted[~zeros])
+                avg_weight = signal_counts_weighted/signal_counts
+                min_variance = avg_weight**2
+                replace = (counts <= 0) & (variances < min_variance)
+                variances[replace] = min_variance[replace]
 
         errors = _np.sqrt(variances)
 
@@ -1603,6 +1646,16 @@ class Spectrum(object):
         notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
         return Spectrum(None, y, err=e, yname=self.ynames, notes=notes, references=refs, wbins=wbins,
                         other_data=other_data)
+
+    def rescale(self, factor, yunit=None, wunit=None):
+        e = self.e*factor if self.e is not None else None
+        y = self.y*factor
+        wbins = self.wbins
+        if yunit is not None:
+            y = y.to(yunit)
+        if wunit is not None:
+            wbins = wbins.to(wunit)
+        return Spectrum(None, y, e, wbins=wbins)
     #endregion
 
     #region analysis
@@ -1739,6 +1792,16 @@ class Spectrum(object):
 
         return specs
 
+    @classmethod
+    def read_muscles(cls, path):
+        h = _fits.open(path)
+        w0, w1, f, e = [h[1].data[s] for s in ['w0', 'w1', 'flux', 'error']]
+        gaps = w0[1:] != w1[:-1]
+        igaps, = _np.nonzero(gaps)
+        f, e = [_np.insert(a, igaps, _np.nan) for a in [f, e]]
+        fcgs = _u.Unit('erg cm-2 s-1 AA-1')
+        wedges = _np.unique(_np.concatenate([w0, w1]))
+        return Spectrum(None, f*fcgs, e*fcgs, wbins=wedges*_u.AA, yname=['f', 'flux'])
 
     @classmethod
     def read(cls, path_or_file_like):
