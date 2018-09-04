@@ -125,67 +125,113 @@ class Photons:
                 self.obs_bandpasses = [_np.array([[]])]
 
 
-    def merge_like_observations(self, clip_band_overlap=False):
+    _ovr_doc = ('"overlap_handling : "adjust Aeff"|"clip"\n'
+                '\t    How to handle multiple observations that overlap in wavelength.\n'
+                '\t      - If "clip," photons from the observation with fewer photons in the overlap are removed.\n'
+                '\t      - If "adjust Aeff," the effective area estimate at the wavelengths of the affected photons '
+                'are increased as appropriate.')
+    def merge_like_observations(self, overlap_handling="adjust Aeff", min_rate_ratio=0.5):
         """
-        Merge observations that have the same exposure times. If their bandpass ranges overlap, then the photons
+        Merge observations that have the same exposure times in place.
+
+        Parameters
+        ----------
+        {ovr}
+
+        If their bandpass ranges overlap, then the photons
         in the overlap get de-weighted due to the "extra" observing time that isn't otherwise accounted for.
 
         Returns
         -------
+        None (operation done in place)
 
         """
+        def get_signal():
+            if 'r' in self:
+                signal = self['r'] > 0
+            else:
+                signal = _np.ones(len(self), bool)
+            return signal
+        signal = get_signal()
 
         i = 0
         while i < len(self.obs_metadata)-1:
-            tref = self.obs_times[i]
-            same_obs = [_np.all(t == tref) for t in self.obs_times[i+1:]]
-            if _np.any(same_obs):
-                same_obs = _np.nonzero(same_obs)[0] + i + 1
-
-                bands_ref = self.obs_bandpasses[i]
-                bands = [self.obs_bandpasses[j] for j in same_obs]
-                if len(reduce(utils.rangeset_intersect, bands, bands_ref)) > 0 and not clip_band_overlap:
-                    raise ValueError('Cannot merge observations that overlap in wavelength.')
-
-                for j in same_obs:
-                    self.obs_metadata[i] += self.obs_metadata[j]
-
-                    from_obs = self.photons['n'] == j
-                    self.photons['n'][from_obs] = i
-                    from_gtr_obs = self.photons['n'] > j
-                    self.photons['n'][from_gtr_obs] -= 1
-
-                    x_bands = utils.rangeset_intersect(self.obs_bandpasses[i], self.obs_bandpasses[j])
-                    if len(x_bands) > 0:
-                        from_obs_j = from_obs
-                        from_obs_i = self.photons['n'] == i
-                        xi = utils.inranges(self.photons['w'][from_obs_i], x_bands)
-                        xj = utils.inranges(self.photons['w'][from_obs_j], x_bands)
-                        if _np.sum(xi) < _np.sum(xj):
-                            ii = _np.nonzero([from_obs_i])[0][xi]
-                            self.photons.remove_rows(ii)
+            j = i + 1
+            while j < len(self.obs_metadata) - 1:
+                # if observations have same exposure starts and ends
+                if _np.all(self.obs_times[i] == self.obs_times[j]):
+                    i_photons = self['n'] == i
+                    j_photons = self['n'] == j
+                    overlap = utils.rangeset_intersect(self.obs_bandpasses[i], self.obs_bandpasses[j])
+                    if len(overlap) > 0:
+                        in_overlap = utils.inranges(self['w'], overlap)
+                        xi = i_photons & in_overlap
+                        xj = j_photons & in_overlap
+                        Ni = float(_np.sum(xi & signal))
+                        Nj = float(_np.sum(xj & signal))
+                        worthwhile = (Ni > 0) and (Nj > 0) and (Ni/Nj > min_rate_ratio) and (Nj/Ni > min_rate_ratio)
+                        if overlap_handling == "adjust Aeff" and worthwhile:
+                            Ai = self._Aeff_interpolator(filter=xi)
+                            Aj = self._Aeff_interpolator(filter=xj)
+                            wi = self['w'][xi]
+                            wj = self['w'][xj]
+                            Ai_at_j = Ai(wj)
+                            Aj_at_i = Aj(wi)
+                            self['a'][xi] += Aj_at_i
+                            self['a'][xj] += Ai_at_j
+                        elif overlap_handling == "clip" or not worthwhile:
+                            if Ni < Nj:
+                                ii, = _np.nonzero(xi)
+                                self.photons.remove_rows(ii)
+                                self.obs_bandpasses[i] = utils.rangeset_subtract(self.obs_bandpasses[i], overlap)
+                            else:
+                                jj, = _np.nonzero(xj)
+                                self.photons.remove_rows(jj)
+                                self.obs_bandpasses[j] = utils.rangeset_subtract(self.obs_bandpasses[j], overlap)
+                            j_photons = self['n'] == j
+                            signal = get_signal()
                         else:
-                            jj = _np.nonzero([from_obs_j])[0][xj]
-                            self.photons.remove_rows(jj)
-                    self.obs_bandpasses[i] = utils.rangeset_union(self.obs_bandpasses[j], self.obs_bandpasses[i])
+                            raise ValueError("overlap_handling option not recognized.")
 
-                for j in same_obs[::-1]:
+                    # associate photons from observation j with i
+                    self['n'][j_photons] = i
+
+                    # decrement higher observation numbers (else while loop indexing gets messed up)
+                    self['n'][self.photons['n'] > j] -= 1
+
+                    # update properties of observation i
+                    self.obs_metadata[i] += self.obs_metadata[j]
+                    self.obs_bandpasses[i] = utils.rangeset_union(self.obs_bandpasses[i], self.obs_bandpasses[j])
+
+                    # remove observation j
                     del self.obs_times[j], self.obs_metadata[j], self.obs_bandpasses[j]
-
+                else:
+                    j += 1
             i += 1
 
+    merge_like_observations.__doc__ = merge_like_observations.__doc__.format(ovr=_ovr_doc)
 
-    def merge_orders(self):
+
+    def merge_orders(self, overlap_handling="adjust Aeff"):
         """
-        Merge overlapping orders in each observation, removing photons from the order with fewer of them where there
-        is overlap.
+        Merge the orders in each observation in place.
+
+        Parameters
+        ----------
+        {ovr}
 
         Returns
         -------
+        None (operation done in place)
+
+        Notes
+        -----
+        Merging is accomplished by changing the "region" weights of the photons where there is overlap in wavelength
+        to account for the double (or more than double) counting.
 
         """
 
-        # split into separate photons objects for each observation, and split he orders within tha observation into
+        # split into separate photons objects for each observation, and split the orders within that observation into
         # faux separate observations, then merge them
         if len(self.obs_times) > 1:
             separate = [self.get_obs(i) for i in range(len(self.obs_times))]
@@ -198,18 +244,20 @@ class Photons:
             obj.obs_metadata = [0]*Norders
             obj.obs_times *= Norders
             obj.obs_bandpasses = [order_ranges[[i]] for i in range(len(order_ranges))]
-            obj.photons['n'] = obj.photons['o']
+            obj.photons['n'] = obj.photons['o'] - _np.min(obj.photons['o'])
             obj.photons.remove_column('o')
-            obj.merge_like_observations(clip_band_overlap=True)
+            obj.merge_like_observations(overlap_handling=overlap_handling)
             obj.obs_metadata = temp_meta
             obj.photons.remove_column('n')
+            obj.obs_bandpasses = [_np.vstack(obj.obs_bandpasses)]
+            obj.obs_times = [obj.obs_times[0]]
 
         all = sum(separate[1:], separate[0])
         self.obs_times = all.obs_times
         self.obs_bandpasses = all.obs_bandpasses
         self.obs_metadata = all.obs_metadata
         self.photons = all.photons
-
+    merge_orders.__doc__ = merge_orders.__doc__.format(ovr=_ovr_doc)
 
     def __getitem__(self, key):
         key = self._get_proper_key(key)
@@ -556,8 +604,8 @@ class Photons:
 
 
     # region ANALYSIS METHODS
-    def spectrum(self, bins, waveranges=None, fluxed=False, energy_units='erg', order='all', time_ranges=None,
-                 bin_method='elastic'):
+    def spectrum(self, bins, waveranges=None, fluxed=False, energy_units='erg', order=None, time_ranges=None,
+                 bin_method='elastic', background=False):
         """
 
         Parameters
@@ -573,17 +621,10 @@ class Photons:
         bin_edges, bin_midpts, rates, errors
 
         """
-        if time_ranges is None and order == 'all':
-            filter = None
-        else:
-            filter = _np.ones(len(self), bool)
-            if order != 'all':
-                filter = filter & (self['o'] == order)
-            if time_ranges is not None:
-                filter  = filter & utils.inranges(self['t'], time_ranges)
+        filter = self._filter_boiler(waveranges=None, time_ranges=time_ranges, order=order)
 
         bin_edges, i_gaps = self._groom_wbins(bins, waveranges, bin_method=bin_method)
-        counts, errors = self._histogram('w', bin_edges, None, fluxed, energy_units, filter)
+        counts, errors = self._histogram('w', bin_edges, None, fluxed, energy_units, filter, background=background)
 
         # add nans if there are gaps
         if i_gaps is not None:
@@ -603,7 +644,7 @@ class Photons:
         return bin_edges, bin_midpts, rates, errors
 
 
-    def spectrum_smooth(self, n, wave_range=None, time_ranges=None, fluxed=False, energy_units='erg'):
+    def spectrum_smooth(self, n, wave_range=None, time_ranges=None, fluxed=False, energy_units='erg', order=None):
         """
 
         Parameters
@@ -621,21 +662,17 @@ class Photons:
 
         # TODO: check with G230L spectrum from ak sco and see what is going on
 
+        filter = self._filter_boiler(waveranges=wave_range, time_ranges=time_ranges, order=order)
+
         # get pertinent photon info
         weights = self._full_weights(fluxed, energy_units)
         w = self['w']
-
-        # which photons are in time range
-        in_time_range = utils.inranges(self['t'], time_ranges)
-
-        # which photons are in wavelength range
-        in_wave_range = utils.inranges(self['w'], wave_range)
 
         # which photons have nonzero weight
         countable = (weights != 0)
 
         # filter out superfluous photons
-        keep = in_time_range & in_wave_range & countable
+        keep = filter & countable
         w, weights = [a[keep] for a in [w, weights]]
 
         # sort photons and weights in order of wavelength
@@ -656,7 +693,7 @@ class Photons:
 
 
     def lightcurve(self, time_step, bandpasses, time_range=None, bin_method='elastic', fluxed=False,
-                   energy_units='erg', nan_between=False, background=False):
+                   energy_units='erg', nan_between=False, background=False, order=None):
         """
 
         Parameters
@@ -690,9 +727,11 @@ class Photons:
             edges, valid_bins = self._construct_time_bins(time_step, bin_method, time_range, bandpasses)
 
         inbands = self._bandpass_filter(bandpasses, check_coverage=False)
+        filter = self._filter_boiler(waveranges=None, time_ranges=None, order=order)
+        filter = filter & inbands
 
         # histogram the counts
-        counts, errors = self._histogram('t', edges, time_range, fluxed, energy_units, filter=inbands,
+        counts, errors = self._histogram('t', edges, time_range, fluxed, energy_units, filter=filter,
                                          background=background)
 
         # get length of each time bin and the bin start and stop
@@ -722,7 +761,7 @@ class Photons:
 
 
     def lightcurve_smooth(self, n, bandpasses, time_range=None, fluxed=False, energy_units='erg', nan_between=False,
-                          independent=False):
+                          independent=False, order=None):
         """
 
         Parameters
@@ -757,14 +796,14 @@ class Photons:
         # which photons are in wavelength bandpasses
         inbands = self._bandpass_filter(bandpasses, check_coverage=False)
 
-        # which photons are in specified time range
-        in_time_range = utils.inranges(self['t'], time_range)
+        # which photons are in specified time range and order
+        filter = self._filter_boiler(waveranges=None, time_ranges=time_range, order=order)
 
         # which photons have nonzero weight
         countable = (weights != 0)
 
         # filter superfluous photons
-        keep = inbands & in_time_range & countable
+        keep = inbands & filter & countable
         t, obs, weights = [a[keep] for a in [t, obs, weights]]
         isort = _np.argsort(t)
         t, obs, weights = [a[isort] for a in [t, obs, weights]]
@@ -792,7 +831,7 @@ class Photons:
 
 
     def spectrum_frames(self, bins, time_step, waveranges=None, time_range=None, w_bin_method='full',
-                        t_bin_method='full', fluxed=False, energy_units='erg'):
+                        t_bin_method='full', fluxed=False, energy_units='erg', order=None):
         """
 
         Parameters
@@ -809,7 +848,7 @@ class Photons:
         -------
         starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
         """
-        kws = dict(fluxed=fluxed, energy_units=energy_units)
+        kws = dict(fluxed=fluxed, energy_units=energy_units, order=order)
 
         # make wbins ahead of time so this doesn't happen in loop
         bin_edges, i_gaps = self._groom_wbins(bins, waveranges, bin_method=w_bin_method)
@@ -869,10 +908,10 @@ class Photons:
 
 
 
-    def average_rate(self, bands, timeranges=None, fluxed=False, energy_units='erg'):
+    def average_rate(self, bands, timeranges=None, fluxed=False, energy_units='erg', order=None):
         if timeranges is None:
             timeranges = _np.vstack(self.obs_times)
-        t0, t1, t, f, e = self.lightcurve(timeranges, bands, fluxed=fluxed, energy_units=energy_units)
+        t0, t1, t, f, e = self.lightcurve(timeranges, bands, fluxed=fluxed, energy_units=energy_units, order=order)
         dt = t1 - t0
         return _np.sum(dt * f) / _np.sum(dt)
 
@@ -1017,6 +1056,12 @@ class Photons:
 
             # total exposure time for observation
             dt = _np.sum(tranges[:,1] - tranges[:,0])
+
+            # avoid double-counting of overlapping orders. (user must call merge_orders t use multiple orders)
+            if len(wranges) > 1:
+                isort = _np.argsort(wranges[:,0])
+                wranges = wranges[isort,:]
+                wranges = reduce(utils.rangeset_union, wranges[1:], wranges[:1])
 
             for wr in wranges:
                 # shift left edges of bins left of wr to wr[0], same for right edges right of wr[1]
@@ -1183,15 +1228,14 @@ class Photons:
         -------
         weights
         """
-        if not ('e' in self or 'r' in self) and not fluxed:
-            return _np.ones(len(self))
-        else:
-            weights = _np.ones(len(self), 'f8')
-            if 'e' in self: weights *= self['e']
-            if 'r' in self: weights *= self['r']
-            if fluxed:
-                weights *= self._compute_epera(units=energy_units)
-            return weights
+        weights = _np.ones(len(self), 'f8')
+        if 'e' in self:
+            weights *= self['e']
+        if 'r' in self:
+            weights *= self['r']
+        if fluxed:
+            weights *= self._compute_epera(units=energy_units)
+        return weights
 
 
     def _groom_wbins(self, wbins, wranges=None, bin_method='elastic'):
@@ -1379,6 +1423,30 @@ class Photons:
         errors = _np.sqrt(variances)
 
         return counts, errors
+
+
+    def _Aeff_interpolator(self,filter=None):
+        w, a = self['w'], self['a']
+        if filter is not None:
+            w, a = w[filter], a[filter]
+        isort = _np.argsort(w)
+        w, a = w[isort], a[isort]
+        return lambda wnew: _np.interp(wnew, w, a)
+
+
+    def _filter_boiler(self, waveranges, time_ranges, order):
+        filter = _np.ones(len(self), bool)
+        if order is None:
+            if 'o' in self and not _np.allclose(self['o'][0], self['o']):
+                raise ValueError('You must specify an order number when there are multiple orders in an observation.  '
+                                 'Call "merge_orders" if you wish to combine orders.')
+        else:
+            filter = filter & (self['o'] == order)
+        if waveranges is not None:
+            filter = filter & utils.inranges(self['w'], waveranges)
+        if time_ranges is not None:
+            filter = filter & utils.inranges(self['t'], time_ranges)
+        return filter
 
     #endregion
 

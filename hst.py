@@ -896,10 +896,11 @@ def good_waverange(x1d, clipends=False, clipflags=None):
         if clipflags is None:
             clipflags = 2 + 128 + 256 if x1d[0].header['instrume'] == 'STIS' else 8 + 128 + 256
         dq = xd['dq']
+        flux = xd['flux']
         minw, maxw = [], []
-        for e,d in zip(edges,dq):
+        for e,d,f in zip(edges, dq, flux):
             dq_match = _np.bitwise_and(d, clipflags)
-            good = (dq_match == 0)
+            good = (dq_match == 0) & (f != 0)
             w0, w1 = e[:-1], e[1:]
             minw.append(w0[good][0])
             maxw.append(w1[good][-1])
