@@ -196,6 +196,10 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
 
             photons['a'] = Aeff
 
+        # merge orders for FUV
+        if hdr['detector'] == 'FUV':
+            photons.merge_orders()
+
     elif stis:
 
         # nothing comes for free with STIS
@@ -532,7 +536,6 @@ def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
                 data_list.append(data[:1] + [wnew] + data[2:] + [xdisp, order_vec])
             else:
                 data_list.append(data + [xdisp, order_vec])
-
 
     data = map(_np.hstack, zip(*data_list))
 
