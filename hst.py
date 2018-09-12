@@ -500,7 +500,7 @@ def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
         else:
             seg = segment[-1]
             segs = [seg]
-            orders = [0 if seg == 'A' else 1]
+            orders = 0
         for order, seg in zip(orders, segs):
             if not (traceloc == 'stsci' or type(traceloc) in [int, float]) and det == 'NUV':
                 raise NotImplementedError('NUV detector has multiple traces on the same detector, so custom traceloc '
