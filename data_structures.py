@@ -155,9 +155,9 @@ class Photons:
         signal = get_signal()
 
         i = 0
-        while i < len(self.obs_metadata)-1:
+        while i < len(self.obs_metadata):
             j = i + 1
-            while j < len(self.obs_metadata) - 1:
+            while j < len(self.obs_metadata):
                 # if observations have same exposure starts and ends
                 if _np.all(self.obs_times[i] == self.obs_times[j]):
                     i_photons = self['n'] == i
@@ -1857,14 +1857,52 @@ class Spectrum(object):
 
     @classmethod
     def read_muscles(cls, path):
-        h = _fits.open(path)
-        w0, w1, f, e = [h[1].data[s] for s in ['w0', 'w1', 'flux', 'error']]
+        if isinstance(path, basestring):
+            path = _tbl.Table.read(path, hdu=1)
+        if isinstance(path, _tbl.Table):
+            w0, w1, f, e = [path[s].quantity for s in
+                            ['w0', 'w1', 'flux', 'error']]
+        else:
+            raise ValueError("Input not recognized.")
         gaps = w0[1:] != w1[:-1]
         igaps, = _np.nonzero(gaps)
         f, e = [_np.insert(a, igaps, _np.nan) for a in [f, e]]
-        fcgs = _u.Unit('erg cm-2 s-1 AA-1')
         wedges = _np.unique(_np.concatenate([w0, w1]))
-        return Spectrum(None, f*fcgs, e*fcgs, wbins=wedges*_u.AA, yname=['f', 'flux'])
+        return Spectrum(None, f, e, wbins=wedges, yname=['f', 'flux'])
+
+
+    @classmethod
+    def read_bt_settl(cls, path, DF=-8):
+        """Reads in a spectrum from the BT-SETTL models from
+        http://perso.ens-lyon.fr/france.allard/. Use DF=-8 for the most
+        recent models. For older models (NextGen and AMES-Cond, see
+        https://phoenix.ens-lyon.fr/Grids/FORMAT).
+
+        Returns a spectrum where fluxes are at the surface of the star.
+        """
+
+        w, f = [], []
+        with open(path) as file:
+            for line in file:
+                pieces = line.split()
+                _w, logf = pieces[:2]
+                _w = float(_w)
+                logf = logf.replace('D', 'E')
+                _f = 10**(float(logf) + DF)
+                w.append(_w)
+                f.append(_f)
+        w, f = map(_np.asarray, (w, f))
+        isort = _np.argsort(w)
+        w, f = [a[isort] for a in (w, f)]
+        dw = _np.diff(w)
+        dw = _np.append(dw, dw[-1])
+        wbins = utils.edges_from_mids_diffs(w, dw)*_u.AA
+        f = f * _u.Unit('erg s-1 cm-2 AA-1')
+        note = 'imported from {}'.format(path)
+        spec = Spectrum(None, f, None, wbins=wbins, notes=note,
+                        yname=['flux', 'f', 'surface_flux'])
+        return spec
+
 
     @classmethod
     def read(cls, path_or_file_like):
