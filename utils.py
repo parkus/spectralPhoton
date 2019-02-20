@@ -42,6 +42,15 @@ def edges_from_mids_diffs(w, dw):
     return _np.append(w - dw/2., w[-1])
 
 
+def edges_from_mids_coarse(w):
+    mid_mid = (w[:-1] + w[1:])/2.0
+    dwa = w[1] - w[0]
+    dwb = w[-1] - w[-2]
+    edges = _np.insert(mid_mid, (0, len(mid_mid)),
+                       (mid_mid[0] - dwa/2, mid_mid[-1] + dwb/2))
+    return edges
+
+
 def as_list(a):
     if a is None:
         return None
