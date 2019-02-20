@@ -1867,7 +1867,7 @@ class Spectrum(object):
         gaps = w0[1:] != w1[:-1]
         igaps, = _np.nonzero(gaps)
         f, e = [_np.insert(a, igaps, _np.nan) for a in [f, e]]
-        wedges = _np.unique(_np.concatenate([w0, w1]))
+        wedges = _np.unique(_np.concatenate([w0.value, w1.value])) * w0.unit
         return Spectrum(None, f, e, wbins=wedges, yname=['f', 'flux'])
 
 
