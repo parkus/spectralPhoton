@@ -1,0 +1,3 @@
+[submodule "crebin"]
+	path = crebin
+	url = https://github.com/parkus/crebin
