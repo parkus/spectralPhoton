@@ -1673,6 +1673,7 @@ class Spectrum(object):
         notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
         newspec = Spectrum(None, ynew, err=enew, yname=self.ynames, notes=notes, references=refs, wbins=newbins,
                            other_data=other_data_new)
+
         # this might be bad code, but this allows rebin to be used by subclasses (though they should redefine it if
         # they have extra attributes that should be changed when rebinned, of course)
         # FIXME actually I don't think this even works...
@@ -1853,7 +1854,8 @@ class Spectrum(object):
             spec = Spectrum(None, f, e, wbins=wbins, notes=notes, other_data=other_dict, yname=ynames)
             specs.append(spec)
 
-        return specs
+        return GappySpectrum(specs)
+
 
     @classmethod
     def read_muscles(cls, path):
@@ -1952,4 +1954,45 @@ class Spectrum(object):
         return Spectrum(None, f, yname=['f', 'flux', 'surface flux'], wbins=wbins)
     #endregion
 
-    pass
+
+class GappySpectrum(object):
+    """
+    Class to handle spectra with gaps, such as from the Cosmic Origins
+    Spectrograph.
+
+    Under construction -- plan is to add methods on an as-needed basis.
+    """
+
+    def __init__(self, *spectra):
+        # so that user can provide a series of arguments, list, or tuple
+        if len(spectra) == 1 and type(spectra[0]) in [list, tuple]:
+            self.spectra = spectra[0]
+        else:
+            self.spectra = spectra
+
+
+    def __len__(self):
+        return len(self.spectra)
+
+
+    def __getitem__(self, item):
+        return self.spectra[item]
+
+
+    def __getattr__(self, item):
+        if hasattr(getattr(self.spectra[0], item), '__call__'):
+            def call_all_specs(*args, **kwargs):
+                result = []
+                for spec in self.spectra:
+                    result.append(getattr(spec ,item)(*args, **kwargs))
+                return result
+            return call_all_specs
+        else:
+            return [getattr(spec, item) for spec in self.spectra]
+
+
+    def plot(self, *args, **kw):
+        lns = self.spectra[0].plot(*args, **kw)
+        kw['color'] = lns[0].get_color()
+        for spec in self.spectra[1:]:
+            spec.plot(*args, **kw)
