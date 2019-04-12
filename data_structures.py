@@ -1644,6 +1644,28 @@ class Spectrum(object):
         self.other_data[name] = data
 
     def rebin(self, newbins, other_data_bin_methods='avg'):
+        """
+        Rebin the spectrum.
+
+        Parameters
+        ----------
+        newbins : list of arrays or array
+        other_data_bin_methods : str or dict
+            How to handle binning of spectrum's "other_data". Can be one of
+            avg, sum, or, and
+
+
+        Returns
+        -------
+
+        """
+        if type(newbins) in [list, tuple]:
+            specs = []
+            for nb in newbins:
+                specs.append(self.rebin(nb, other_data_bin_methods=other_data_bin_methods))
+            return GappySpectrum(specs)
+
+
         ob = self.wbins.to(newbins.unit).value
         nb = newbins.value
 
@@ -1663,11 +1685,13 @@ class Spectrum(object):
         else:
             if type(other_data_bin_methods) is str:
                 methods = [other_data_bin_methods] * len(self.other_data)
+                methods = dict(zip(self.other_data.keys(), methods))
             else:
                 methods = other_data_bin_methods
             other_data_new = {}
-            for key, method in zip(self.other_data, methods):
+            for key, d in self.other_data.items():
                 d = self.other_data[key]
+                method = methods[key]
                 other_data_new[key] = _rebin.rebin(nb, ob, d.value, method) * d.unit
 
         notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
@@ -1969,6 +1993,13 @@ class GappySpectrum(object):
             self.spectra = spectra[0]
         else:
             self.spectra = spectra
+
+        bins = [spec.wbins for spec in spectra]
+        intersecting_bins = reduce(utils.rangeset_intersect,
+                                   spec.wbins, spec.wbins[0])
+        if len(intersecting_bins > 0):
+            raise ValueError('The spectra making up a GappySpectrum should '
+                             'not overlap.')
 
 
     def __len__(self):
