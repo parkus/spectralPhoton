@@ -1640,8 +1640,10 @@ class Spectrum(object):
     def add_note(self, note):
         self.notes.append(note)
 
+
     def add_data(self, name, data):
         self.other_data[name] = data
+
 
     def rebin(self, newbins, other_data_bin_methods='avg'):
         """
@@ -1652,11 +1654,14 @@ class Spectrum(object):
         newbins : list of arrays or array
         other_data_bin_methods : str or dict
             How to handle binning of spectrum's "other_data". Can be one of
-            avg, sum, or, and
+            'avg', 'sum', 'or', 'and', 'max', and 'min'.
 
 
         Returns
         -------
+        Spectrum or GappySpectrum
+            Rebinned spectrum. If a list of newbin arrays was provided,
+            a GappySpectrum is returned.
 
         """
         if type(newbins) in [list, tuple]:
@@ -1994,9 +1999,8 @@ class GappySpectrum(object):
         else:
             self.spectra = spectra
 
-        bins = [spec.wbins for spec in spectra]
-        intersecting_bins = reduce(utils.rangeset_intersect,
-                                   spec.wbins, spec.wbins[0])
+        bins = [spec.wbins for spec in self.spectra]
+        intersecting_bins = reduce(utils.rangeset_intersect, bins, bins[0])
         if len(intersecting_bins > 0):
             raise ValueError('The spectra making up a GappySpectrum should '
                              'not overlap.')
