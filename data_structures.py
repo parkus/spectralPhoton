@@ -1999,7 +1999,7 @@ class GappySpectrum(object):
         else:
             self.spectra = spectra
 
-        bins = [spec.wbins for spec in self.spectra]
+        bins = [_np.array([spec.wbins[[0,-1]]]) for spec in self.spectra]
         intersecting_bins = reduce(utils.rangeset_intersect, bins, bins[0])
         if len(intersecting_bins > 0):
             raise ValueError('The spectra making up a GappySpectrum should '
