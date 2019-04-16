@@ -1883,7 +1883,7 @@ class Spectrum(object):
             spec = Spectrum(None, f, e, wbins=wbins, notes=notes, other_data=other_dict, yname=ynames)
             specs.append(spec)
 
-        return GappySpectrum(specs)
+        return MultiSpectrum(specs)
 
 
     @classmethod
@@ -1984,46 +1984,46 @@ class Spectrum(object):
     #endregion
 
 
-class GappySpectrum(object):
+class MultiSpectrum(object):
     """
-    Class to handle spectra with gaps, such as from the Cosmic Origins
-    Spectrograph.
+    Class to handle spectra with multiple orders or segments that can overlap.
 
     Under construction -- plan is to add methods on an as-needed basis.
     """
 
-    def __init__(self, *spectra):
-        # so that user can provide a series of arguments, list, or tuple
-        if len(spectra) == 1 and type(spectra[0]) in [list, tuple]:
-            self.spectra = spectra[0]
-        else:
-            self.spectra = spectra
-
-        bins = [_np.array([spec.wbins[[0,-1]]]) for spec in self.spectra]
-        intersecting_bins = reduce(utils.rangeset_intersect, bins, bins[0])
-        if len(intersecting_bins > 0):
-            raise ValueError('The spectra making up a GappySpectrum should '
-                             'not overlap.')
+    def __init__(self, spectra):
+        self.__dict__['spectra'] = spectra
 
 
     def __len__(self):
         return len(self.spectra)
 
 
+    def __getattr__(self, item):
+        if hasattr(getattr(self.spectra[0], item), '__call__'):
+            def call_all_specs(*args, **kwargs):
+                items = []
+                for spec in self.spectra:
+                    items.append(getattr(spec ,item)(*args, **kwargs))
+                return items
+            return call_all_specs
+        else:
+            return [getattr(spec, item) for spec in self.spectra]
+
+
     def __getitem__(self, item):
         return self.spectra[item]
 
 
-    def __getattr__(self, item):
-        if hasattr(getattr(self.spectra[0], item), '__call__'):
-            def call_all_specs(*args, **kwargs):
-                result = []
-                for spec in self.spectra:
-                    result.append(getattr(spec ,item)(*args, **kwargs))
-                return result
-            return call_all_specs
+    def __setattr__(self, key, value):
+        if key in 'spectra':
+            raise ValueError('Can only set spectra attribute on '
+                             'initialization.')
+        if hasattr(value, '__iter__') and len(value) == len(self.spectra):
+                for spec, val in zip(self.spectra, value):
+                    setattr(spec, key, val)
         else:
-            return [getattr(spec, item) for spec in self.spectra]
+            raise ValueError('Input could not be shaped to match spectra.')
 
 
     def plot(self, *args, **kw):
@@ -2031,3 +2031,88 @@ class GappySpectrum(object):
         kw['color'] = lns[0].get_color()
         for spec in self.spectra[1:]:
             spec.plot(*args, **kw)
+
+
+
+class GappySpectrum(MultiSpectrum):
+    """
+    Class to handle spectra with multiple segements that do not overlap.
+    This property allows the user to play with the data using single arrays
+    for things like flux rather than having to deal with lists with separate
+    arrays for each segment as in MultiSpectrum.
+
+    Under construction -- plan is to add methods on an as-needed basis.
+    """
+
+    def __init__(self, *args, **kws):
+        """
+        Can provide a list of spectra or lists of components (w, y, ...) to
+        be fed to spectra.
+
+        Parameters
+        ----------
+        args
+        kws
+        """
+        if len(args) == 1 and isinstance(args[0][0], Spectrum):
+             self.__dict__['spectra'] = args[0]
+        else:
+            # unpack lists of spectral data
+            spectra = []
+            for i in range(len(args[0])):
+                single_args = [val[0] for val in args]
+                single_kws = {}
+                for key, val in kws.items():
+                    single_kws[key] = val[0]
+                spectra.append(Spectrum(*single_args, **single_kws))
+            self.__dict__['spectra'] = spectra
+
+        # sort spectra and make sure they don't overlap
+        blocks = _np.array([spec.wbins[[0,-1]] for spec in self.spectra])
+        isort = _np.argsort(blocks[:,0])
+        blocks = blocks[isort, :]
+        self.__dict__['spectra'] = [self.spectra[i] for i in isort]
+        if _np.any(blocks[1:,0] < blocks[:-1,1]):
+            raise ValueError('The spectra making up a GappySpectrum should '
+                             'not overlap.')
+
+        self.__dict__['i_gaps'] = _np.cumsum(map(len, self.spectra))
+
+
+    @property
+    def wbins(self):
+        return [getattr(spec, 'wbins') for spec in self.spectra]
+
+
+    def __len__(self):
+        return sum(map(len, self.spectra))
+
+
+    def __getattr__(self, item):
+        if hasattr(getattr(self.spectra[0], item), '__call__'):
+            def call_all_specs(*args, **kwargs):
+                items = []
+                for spec in self.spectra:
+                    items.append(getattr(spec ,item)(*args, **kwargs))
+                return _np.hstack(items)
+            return call_all_specs
+        else:
+            return [getattr(spec, item) for spec in self.spectra]
+
+
+    def __setattr__(self, key, value):
+        if key in 'spectra':
+            raise ValueError('Can only set spectra attribute on '
+                             'initialization.')
+        if hasattr(value, '__iter__'):
+            if len(value) == len(self.spectra):
+                for spec, val in zip(self.spectra, value):
+                    setattr(spec, key, val)
+            elif len(self) == len(value):
+                i0 = 0
+                for spec in self.spectra:
+                    i1 = i0 + len(spec)
+                    setattr(spec, key, value[i0:i1])
+                    i0 = i1
+        else:
+            raise ValueError('Input could not be shaped to match spectra.')
