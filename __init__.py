@@ -1,2 +1,2 @@
-from data_structures import Photons, Spectrum
+from data_structures import Photons, Spectrum, MultiSpectrum, GappySpectrum
 import hst

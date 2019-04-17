@@ -1771,9 +1771,15 @@ class Spectrum(object):
             raise ValueError('No overlapping or touching ranges allowed.')
         dw = _np.diff(wbin, 1).squeeze()
         newspec = self.rebin(wbin.ravel())
-        flux_dens, err_dens = newspec.y[::2], newspec.e[::2]
-        fluxes, errs = flux_dens*dw, err_dens*dw
-        flux, error = _np.sum(fluxes), utils.quadsum(errs)
+        flux_dens = newspec.y[::2]
+        fluxes = flux_dens*dw
+        flux = _np.sum(fluxes)
+        if self.e is None:
+            error = None
+        else:
+            err_dens = newspec.e[::2]
+            errs = err_dens*dw
+            error = utils.quadsum(errs)
         return flux, error
 
     def plot(self, *args, **kw):
@@ -2060,10 +2066,10 @@ class GappySpectrum(MultiSpectrum):
             # unpack lists of spectral data
             spectra = []
             for i in range(len(args[0])):
-                single_args = [val[0] for val in args]
+                single_args = [val[i] for val in args]
                 single_kws = {}
                 for key, val in kws.items():
-                    single_kws[key] = val[0]
+                    single_kws[key] = val[i]
                 spectra.append(Spectrum(*single_args, **single_kws))
             self.__dict__['spectra'] = spectra
 
@@ -2094,10 +2100,11 @@ class GappySpectrum(MultiSpectrum):
                 items = []
                 for spec in self.spectra:
                     items.append(getattr(spec ,item)(*args, **kwargs))
-                return _np.hstack(items)
+                return items
             return call_all_specs
         else:
-            return [getattr(spec, item) for spec in self.spectra]
+            results = [getattr(spec, item) for spec in self.spectra]
+            return _np.hstack(results).value*results[0].unit
 
 
     def __setattr__(self, key, value):
