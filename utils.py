@@ -339,7 +339,7 @@ def polyfit_binned(bins, y, yerr, order):
         maximum likelihood model fit.
     """
     N, M = order, len(y)
-    if type(yerr) in [int,float]: yerr = yerr*np.ones(M)
+    if type(yerr) in [int,float]: yerr = yerr*_np.ones(M)
     bins = _np.asarray(bins)
     assert not _np.any(yerr == 0.0)
 
@@ -391,3 +391,20 @@ def polyfit_binned(bins, y, yerr, order):
         return y, yerr
 
     return c[::-1], cov[::-1,::-1], f
+
+
+def bins_1D_to_2D(bins1D):
+    return _np.array((bins1D[:-1], bins1D[1:])).T * bins1D.unit
+
+
+def bins_2D_to_1D(bins2D):
+    return _np.append(bins2D[:,0], bins2D[-1,1]).value * bins2D.unit
+
+
+def i_bin_gaps(bins2D):
+    return _np.nonzero(bins2D[1:,0] > bins2D[:-1, 1])[0]
+
+
+def split_at_gaps(bins2D):
+    i_gaps = i_bin_gaps(bins2D)
+    return _np.split(bins2D, i_gaps)

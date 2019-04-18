@@ -1633,7 +1633,19 @@ class Spectrum(object):
     #endregion
 
     #region utilities
-
+    @classmethod
+    def _groom_integration_ranges(cls, *args):
+        if len(args) == 1:
+            wbin = args[0]
+        elif len(args) == 2:
+            w0, w1 = args
+            wbin = [w0.value, w1.to(w0.unit).value] * w0.unit
+        else:
+            raise ValueError('Input must either be [[w0,w1],[w2,w3],...], [w0,w1], or w0, w1.')
+        wbin = wbin.reshape(-1, 2)
+        if _np.any(wbin[1:,0] <= wbin[:-1,1]):
+            raise ValueError('No overlapping or touching ranges allowed.')
+        return wbin
     #endregion
 
     #region modification methods
@@ -1664,7 +1676,14 @@ class Spectrum(object):
             a GappySpectrum is returned.
 
         """
-        if type(newbins) in [list, tuple]:
+        # if first element is another list/array/etc., split spectrum
+        try:
+            len(newbins[0])
+            multi = True
+        except TypeError:
+            multi = False
+
+        if multi:
             specs = []
             for nb in newbins:
                 specs.append(self.rebin(nb, other_data_bin_methods=other_data_bin_methods))
@@ -1752,23 +1771,40 @@ class Spectrum(object):
     #endregion
 
     #region analysis
+
+
     def integrate(self, *args):
-        if len(args) == 1:
-            wbin = args[0]
-            try:
-                wbin.to(self.w.unit)
-            except AttributeError, _u.UnitConversionError:
-                raise ValueError('Input must be astropy quantity with units convertable to that of spectrum.')
-        elif len(args) == 2:
-            w0, w1 = args
-            wbin = [w0.value, w1.to(w0.unit).value] * w0.unit
-        else:
-            raise ValueError('Input must either be [[w0,w1],[w2,w3],...], [w0,w1], or w0, w1.')
-        if _np.any(wbin < self.w[0]) or _np.any(wbin > self.w[-1]):
+        """
+        integrate(wa, wb, gap_handling='error')
+        integrate(ranges, gap_handling='error')
+
+        Integrate a range or set of ranges in a spectrum.
+
+        Parameters
+        ----------
+        wa, wb -or- ranges:
+            If two arguments are used, they give the start and end point of
+            integration. Else a two element list or array gives those points.
+            An Nx2 array gives a list of integration ranges to be summed.
+        gap_handling : 'error'|'zero'
+            What to do if the integration ranges include portions of the
+            spectrum's gaps. If 'error', raise an error. If 'zero', treat the
+            gaps as zeros. Default is error.
+
+        Returns
+        -------
+        flux, error
+            If spectrum does not include error data, error is set to None.
+
+        """
+        wbin = Spectrum._groom_integration_ranges(*args)
+        try:
+            wbin.to(self.w.unit)
+        except AttributeError, _u.UnitConversionError:
+            raise ValueError('Input must be astropy quantity with units '
+                             'convertable to that of spectrum.')
+        if _np.any(wbin < self.wbins[0]) or _np.any(wbin > self.wbins[-1]):
             raise ValueError('Integration range is beyond spectrum range.')
-        wbin = wbin.reshape(-1, 2)
-        if _np.any(wbin[1:,0] <= wbin[:-1,1]):
-            raise ValueError('No overlapping or touching ranges allowed.')
         dw = _np.diff(wbin, 1).squeeze()
         newspec = self.rebin(wbin.ravel())
         flux_dens = newspec.y[::2]
@@ -2087,7 +2123,125 @@ class GappySpectrum(MultiSpectrum):
 
     @property
     def wbins(self):
-        return [getattr(spec, 'wbins') for spec in self.spectra]
+        return [spec.wbins for spec in self.spectra]
+
+
+    @property
+    def wranges(self):
+        wunit = self[0].wbins.unit
+        ranges = _np.array([spec.wbins[[0,-1]].to(wunit)
+                            for spec in self.spectra])
+        return ranges*wunit
+
+
+    def any_gap_overalp(self, other_wranges, strict=False):
+        wunit = self.wranges.unit
+        other_wranges = other_wranges.to(wunit)
+        gap_overlap = utils.rangeset_subtract(other_wranges.value,
+                                              self.wranges.value)
+        if strict:
+            return len(gap_overlap) > 0
+        else:
+            dwmin = _np.min(self.dw)
+            gap_lens = _np.diff(gap_overlap, 1) * wunit
+            return _np.any(gap_lens > dwmin / 100.)
+
+
+    def integrate(self, *args, **kws):
+        """
+        integrate(wa, wb, gap_handling='error')
+        integrate(ranges, gap_handling='error')
+
+        Integrate a range or set of ranges in a spectrum.
+
+        Parameters
+        ----------
+        wa, wb -or- ranges:
+            If two arguments are used, they give the start and end point of
+            integration. Else a two element list or array gives those points.
+            An Nx2 array gives a list of integration ranges to be summed.
+        gap_handling : 'error'|'zero'
+            What to do if the integration ranges include portions of the
+            spectrum's gaps. If 'error', raise an error. If 'zero', treat the
+            gaps as zeros. Default is error.
+
+        Returns
+        -------
+        flux, error
+            If spectrum does not include error data, error is set to None.
+
+        """
+        gap_handling = kws.get('gap_handling', 'error')
+        wbin = Spectrum._groom_integration_ranges(*args)
+
+        # check for gap overlap
+        # sometimes small numerical errors cause trouble, so compare to size
+        # of pixels
+        if self.any_gap_overalp(wbin):
+            if gap_handling == 'error':
+                raise ValueError('Some of the integration ranges cover gaps '
+                                 'in the spectrum.')
+            elif gap_handling == 'zero':
+                pass
+            else:
+                raise ValueError('gap_handling parameter not recognized')
+
+        wunit = wbin.unit
+        Fs, Es = [], []
+        for spec in self.spectra:
+            wrange = spec.wbins[[0, -1]].to(wunit).value
+            xbins = utils.rangeset_intersect(wbin.value, [wrange])
+            if len(xbins) > 0:
+                F, E = spec.integrate(xbins*wunit)
+            else:
+                Funit = spec.y.unit*wunit
+                F = 0*Funit
+                E = None if spec.e is None else 0*Funit
+            Fs.append(F); Es.append(E)
+
+        F = sum(Fs)
+        if any(E is None for E in Es):
+            E = None
+        else:
+            E = _np.sqrt(sum([E**2 for E in Es]))
+        return F, E
+
+
+    def rebin(self, newbins, other_data_bin_methods='avg',
+              gap_handling='error'):
+        # if it is just a single set of bins, make it a list
+        try:
+            len(newbins[0])
+            newbin_list = newbins
+        except TypeError:
+            newbin_list = [newbins]
+
+        odbm = other_data_bin_methods
+
+        wranges = self.wranges
+        wunit = wranges.unit
+        newbin_list = [nb.to(wunit) for nb in newbin_list]
+        newbins2D_list = map(utils.bins_1D_to_2D, newbin_list)
+        newbins2D = _np.vstack(newbins2D_list).value * wunit
+        if self.any_gap_overalp(newbins2D):
+            if gap_handling == 'error':
+                raise ValueError('Spectrum does not fully cover newbins.')
+            if gap_handling == 'intersect':
+                newbins2D = utils.rangeset_intersect(wranges.value,
+                                                     newbins2D.value)
+                newbins2D = newbins2D*wunit
+                newbins2D_list = utils.split_at_gaps(newbins2D)
+                newbin_list = map(utils.bins_2D_to_1D, newbins2D_list)
+            else:
+                raise ValueError('value for gap_handling not recognized')
+
+        specs = []
+        for bins in newbin_list:
+            for spec in self.spectra:
+                if spec.wbins[0] <= bins[0] and spec.wbins[-1] >= bins[-1]:
+                    specs.append(spec.rebin(bins, other_data_bin_methods=odbm))
+
+        return GappySpectrum(specs)
 
 
     def __len__(self):
