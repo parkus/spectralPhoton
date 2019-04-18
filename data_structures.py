@@ -1556,7 +1556,7 @@ class Spectrum(object):
     ynames = []
     other_data = {}
 
-    def __init__(self, w, y, err=None, dw='guess', yname='y', other_data=None, references=None, notes=None, wbins=None):
+    def __init__(self, w, y, err=None, dw='guess', yname='y', other_data=None, references=None, meta=None, wbins=None):
         """
 
         Parameters
@@ -1573,8 +1573,8 @@ class Spectrum(object):
             Additional data associated with points/bins.
         references : list
             References for spectrum.
-        notes : list
-            Notes on spectrum.
+        meta : dict
+            Metadata for spectrum.
         wbins : array
             Wavelength bin edges. Overrides w and dw.
 
@@ -1595,7 +1595,7 @@ class Spectrum(object):
         self.ynames = utils.as_list(yname)
         self.other_data = {} if other_data is None else other_data
         self.references = [] if references is None else references
-        self.notes = [] if notes is None else notes
+        self.meta = {} if meta is None else meta
 
     #region properties
     dw = property(lambda self: _np.diff(self.wbins))
@@ -1647,10 +1647,6 @@ class Spectrum(object):
             raise ValueError('No overlapping or touching ranges allowed.')
         return wbin
     #endregion
-
-    #region modification methods
-    def add_note(self, note):
-        self.notes.append(note)
 
 
     def add_data(self, name, data):
@@ -1718,8 +1714,9 @@ class Spectrum(object):
                 method = methods[key]
                 other_data_new[key] = _rebin.rebin(nb, ob, d.value, method) * d.unit
 
-        notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
-        newspec = Spectrum(None, ynew, err=enew, yname=self.ynames, notes=notes, references=refs, wbins=newbins,
+        meta, refs = [_copy.copy(a) for a in [self.meta, self.references]]
+        newspec = Spectrum(None, ynew, err=enew, yname=self.ynames, meta=meta,
+                           references=refs, wbins=newbins,
                            other_data=other_data_new)
 
         # this might be bad code, but this allows rebin to be used by subclasses (though they should redefine it if
@@ -1755,8 +1752,8 @@ class Spectrum(object):
         else:
             e = self.e[keep]
 
-        notes, refs = [_copy.copy(a) for a in [self.notes, self.references]]
-        return Spectrum(None, y, err=e, yname=self.ynames, notes=notes, references=refs, wbins=wbins,
+        meta, refs = [_copy.copy(a) for a in [self.meta, self.references]]
+        return Spectrum(None, y, err=e, yname=self.ynames, meta=meta, references=refs, wbins=wbins,
                         other_data=other_data)
 
     def rescale(self, factor, yunit=None, wunit=None):
@@ -1867,7 +1864,7 @@ class Spectrum(object):
                 names.append(key)
         tbl = _table.Table(data=data, names=names)
         tbl.meta['ynames'] = self.ynames
-        tbl.meta['notes'] = self.notes
+        tbl.meta['meta'] = self.meta
         tbl.meta['references'] = self.references
         return tbl
 
@@ -1909,7 +1906,7 @@ class Spectrum(object):
                 other_data[name] = vec
 
         ynames = ['f', 'flux']
-        notes = h[0].header + h[1].header if keep_header else None
+        meta = h[0].header + h[1].header if keep_header else None
 
         specs = []
         for i in range(len(std_data['wavelength'])):
@@ -1922,7 +1919,7 @@ class Spectrum(object):
                     other_dict[key] = other_data[key][i]
             else:
                 other_dict = None
-            spec = Spectrum(None, f, e, wbins=wbins, notes=notes, other_data=other_dict, yname=ynames)
+            spec = Spectrum(None, f, e, wbins=wbins, meta=meta, other_data=other_dict, yname=ynames)
             specs.append(spec)
 
         return MultiSpectrum(specs)
@@ -1972,7 +1969,7 @@ class Spectrum(object):
         wbins = utils.edges_from_mids_diffs(w, dw)*_u.AA
         f = f * _u.Unit('erg s-1 cm-2 AA-1')
         note = 'imported from {}'.format(path)
-        spec = Spectrum(None, f, None, wbins=wbins, notes=note,
+        spec = Spectrum(None, f, None, wbins=wbins, meta=note,
                         yname=['flux', 'f', 'surface_flux'])
         return spec
 
@@ -1997,13 +1994,18 @@ class Spectrum(object):
         w, dw, y = [tbl[s].quantity for s in ['w', 'dw', 'y']]
         tbl.remove_columns(['w', 'dw', 'y'])
         if 'err' in tbl.colnames:
-            e = tbl['err']
-            tbl.remove_column('e')
+            e = tbl['err'].quantity
+            tbl.remove_column('err')
         else:
             e = None
 
         refs = tbl.meta['references']
-        notes = tbl.meta['notes']
+        if 'meta' in tbl.meta:
+            meta = tbl.meta['meta']
+        else: # backwards compatability
+            if 'notes' in tbl.meta:
+                meta = {'misc notes':tbl.meta['notes']}
+
         ynames = tbl.meta['ynames']
 
         if len(tbl.colnames) > 0:
@@ -2013,7 +2015,7 @@ class Spectrum(object):
         else:
             other_data = None
 
-        spec = Spectrum(w, y, e, dw=dw, other_data=other_data, yname=ynames, references=refs, notes=notes)
+        spec = Spectrum(w, y, e, dw=dw, other_data=other_data, yname=ynames, references=refs, meta=meta)
         return spec
 
     @classmethod
@@ -2033,8 +2035,9 @@ class MultiSpectrum(object):
     Under construction -- plan is to add methods on an as-needed basis.
     """
 
-    def __init__(self, spectra):
+    def __init__(self, spectra, meta={}):
         self.__dict__['spectra'] = spectra
+        self.__dict__['meta'] = meta
 
 
     def __len__(self):
@@ -2119,6 +2122,8 @@ class GappySpectrum(MultiSpectrum):
                              'not overlap.')
 
         self.__dict__['i_gaps'] = _np.cumsum(map(len, self.spectra))
+
+        self.__dict__['meta'] = kws.get('meta', {})
 
 
     @property
@@ -2262,9 +2267,6 @@ class GappySpectrum(MultiSpectrum):
 
 
     def __setattr__(self, key, value):
-        if key in 'spectra':
-            raise ValueError('Can only set spectra attribute on '
-                             'initialization.')
         if hasattr(value, '__iter__'):
             if len(value) == len(self.spectra):
                 for spec, val in zip(self.spectra, value):

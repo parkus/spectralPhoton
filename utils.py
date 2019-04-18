@@ -39,7 +39,7 @@ def wave_edges(wave_midpts):
 
 
 def edges_from_mids_diffs(w, dw):
-    return _np.append(w - dw/2., w[-1])
+    return _np.append(w - dw/2., w[-1] + dw[-1]/2.)
 
 
 def edges_from_mids_coarse(w):
