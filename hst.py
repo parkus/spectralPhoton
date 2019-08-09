@@ -206,17 +206,18 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
         time, wave, xdisp, order, dq = _get_photon_info_STIS(tag, x1d, traceloc)
         photons.photons = _tbl.Table([time, wave, xdisp, order, dq], names=['t', 'w', 'y', 'o', 'q'])
 
+        # get number of orders and the order numbers
+        Norders = x1d['sci'].header['naxis2']
+        order_nos = x1d['sci'].data['sporder']
+
         # add signal/background column to photons
         if divvyit:
             ysignal, yback = stsci_extraction_ranges(x1d)
-            photons.divvy(ysignal, yback)
+            for order, ys, yb in zip(order_nos, ysignal, yback):
+                photons.divvy(ys, yb, order=int(order))
 
         # add effective area to photons
         if fluxit:
-            # get number of orders and the order numbers
-            Norders = x1d['sci'].header['naxis2']
-            order_nos = x1d['sci'].data['sporder']
-
             Aeff = _np.zeros_like(photons['t'])
             for x1d_row, order in zip(range(Norders), order_nos):
                 Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row, order, method=fluxed, flux_bins=flux_bins)
@@ -671,11 +672,13 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
         bin_edges_ds, densities, errors = _utils.adaptive_downsample(bin_edges, [flux, cps_density],
                                                                      [error, cps_error], rebin)
         flux, cps_density = densities
-    if user_bin:
+    elif user_bin:
         bin_edges_ds = rebin
         flux = _utils.rebin(bin_edges_ds, bin_edges, flux)
         if x1d_net is not None:
             cps_density = _utils.rebin(bin_edges_ds, bin_edges, cps_density)
+    else:
+        bin_edges_ds = bin_edges
 
     w = (bin_edges_ds[:-1] + bin_edges_ds[1:]) / 2.0
     dw = _np.diff(bin_edges_ds)
@@ -728,6 +731,8 @@ def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only', flux_bins=Non
     w_bins = _utils.wave_edges(w)
 
     if method == 'x1d_only':
+        if flux_bins in [None, False, 'x1d']:
+            rebin=False
         Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins, x1d_net=cps)
     elif method == 'tag_vs_x1d':
         Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins)
@@ -941,22 +946,23 @@ def stsci_extraction_ranges(x1d, seg=''):
         ybk1, ybk2 = xh['b_bkg1_' + seg], xh['b_bkg2_' + seg]
         bkoff = [ybk1 - ytrace, ybk2 - ytrace]
 
+        ysignal = _np.array([-0.5,0.5])*extrsize
+        bkoff = _np.array(bkoff)
+        yback = _np.array([bkoff - bksize/2., bkoff + bksize/2.]).T
+
     if stis:
-        extrsize = _np.median(xd['extrsize'])
-        bksize = map(_np.median, [xd['bk1size'], xd['bk2size']])
-        bkoff = map(_np.median, [xd['bk1offst'], xd['bk2offst']])
+        extrsize = 2.*xd['extrsize']
 
-    ysignal = _np.array([-0.5, 0.5]) * extrsize
-
-    if not hasattr(bkoff, '__iter__'): bkoff = [bkoff]
-    if not hasattr(bksize, '__iter__'): bksize = [bksize]
-    bksize, bkoff = map(_np.array, [bksize, bkoff])
-    yback = _np.array([bkoff - bksize/2.0, bkoff + bksize/2.0]).T
-
-    # make sure there is no overlap between the signal and background regions
-    yback = yback[_np.argsort(yback[:,0]), :]  # else the bottom two lines can screw things up
-    if yback[0, 1] > ysignal[0]: yback[0, 1] = ysignal[0]
-    if yback[1, 0] < ysignal[1]: yback[1, 0] = ysignal[1]
+        ysignal = _np.outer(extrsize, [-0.5, 0.5])
+        yback = []
+        for i in range(len(extrsize)):
+            ysz = extrsize[i]
+            sz1, sz2 = xd['bk1size'][i], xd['bk2size'][i]
+            off1, off2 = xd['bk1offst'][i], xd['bk2offst'][i]
+            off1 -= sz1
+            off2 += sz2
+            bkrng = [[off1 - sz1/2, off1 + sz1/2], [off2 - sz2/2, off2 + sz2/2]]
+            yback.append(bkrng)
 
     return ysignal, yback
 

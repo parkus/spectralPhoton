@@ -1,5 +1,4 @@
 import copy as _copy
-
 import numpy as _np
 import utils
 from astropy import time as _time, table as _tbl, units as _u, constants as _const, table as _table
@@ -559,22 +558,26 @@ class Photons:
 
         # deal just with the photons of appropriate order
         if order is not None:
-            filter, = _np.nonzero(self['o'] == order)
+            filter = self['o'] == order
+        else:
+            filter = slice(None)
 
         # determine which band counts are in
-        y = self['y'] if order is None else self['y'][filter]
+        y = self['y'][filter]
         ii = _np.searchsorted(edges, y)
 
         # add/modify weights in 'r' column
         # TRADE: sacrifice memory with a float weights column versus storing the area ratio and just using integer
         # flags because this allows better flexibility when combining photons from multiple observations
-        self['r'] = _np.zeros(len(self), 'f4')
-        signal = reduce(_np.logical_or, [ii == i for i in isignal])
-        if order is not None: signal = filter[signal]
+        if 'r' not in self:
+            self['r'] = _np.zeros(len(self), 'f4')
+        self['r'][filter] = 0
+        signal = _np.zeros(len(self), bool)
+        signal[filter] = reduce(_np.logical_or, [ii == i for i in isignal])
         self['r'][signal] = 1.0
         if len(yback) > 0:
-            bkgnd = reduce(_np.logical_or, [ii == i for i in iback])
-            if order is not None: bkgnd = filter[bkgnd]
+            bkgnd = _np.zeros(len(self), bool)
+            bkgnd[filter] = reduce(_np.logical_or, [ii == i for i in iback])
             self['r'][bkgnd] = -area_ratio
 
 
@@ -1630,6 +1633,22 @@ class Spectrum(object):
 
     def __len__(self):
         return len(self.y)
+
+    def __add__(self, spec2):
+        rebinned = spec2.rebin(self.wbins)
+        flux = self.y + rebinned.y
+        if self.e is not None and spec2.e is not None:
+            error = _np.sqrt(self.error**2 + rebinned.error**2)
+        else:
+            error = None
+
+        refs = self.references + spec2.references
+        meta = self.meta
+        for k,v in spec2.meta.items():
+            meta[k] = v
+
+        return Spectrum(None, flux, err=error, wbins=self.wbins,
+                        yname=self.ynames, references=refs, meta=meta)
     #endregion
 
     #region utilities
@@ -1768,6 +1787,19 @@ class Spectrum(object):
     #endregion
 
     #region analysis
+    def filter_flux(self, w, transmission):
+        w_use = (self.w > w[0]) & (self.w < w[-1])
+        w_spec = self.w[w_use]
+        trans_interp = _np.interp(w_spec, w, transmission)
+        ty = self.y[w_use]*trans_interp
+        F = _np.trapz(ty, w_spec)
+        if self.e is not None:
+            tv = self.e[w_use]**2*trans_interp
+            V = _np.trapz(tv, w_spec)
+            E = _np.sqrt(V)
+        else:
+            E = None
+        return F, E
 
 
     def integrate(self, *args):
@@ -2076,7 +2108,6 @@ class MultiSpectrum(object):
         kw['color'] = lns[0].get_color()
         for spec in self.spectra[1:]:
             spec.plot(*args, **kw)
-
 
 
 class GappySpectrum(MultiSpectrum):
