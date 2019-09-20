@@ -834,7 +834,8 @@ class Photons:
 
 
     def spectrum_frames(self, bins, time_step, waveranges=None, time_range=None, w_bin_method='full',
-                        t_bin_method='full', fluxed=False, energy_units='erg', order=None):
+                        t_bin_method='full', fluxed=False,
+                        energy_units='erg', order=None, progress_bar=False):
         """
 
         Parameters
@@ -851,6 +852,14 @@ class Photons:
         -------
         starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
         """
+        if progress_bar:
+            try:
+                from tqdm import tqdm as bar
+            except ImportError:
+                raise ImportError('You need the tqdm module for a progress '
+                                  'bar.')
+        else:
+            bar = lambda x: x
         kws = dict(fluxed=fluxed, energy_units=energy_units, order=order)
 
         # make wbins ahead of time so this doesn't happen in loop
@@ -869,7 +878,7 @@ class Photons:
         time_midpts = (starts + stops)/2.0
 
         spectra = []
-        for time_range in zip(starts, stops):
+        for time_range in bar(zip(starts, stops)):
             kws['time_ranges'] = time_range
             spectra.append(self.spectrum(**kws))
         bin_edges, bin_midpts, rates, errors = map(_np.array, zip(*spectra))
