@@ -1857,6 +1857,29 @@ class Spectrum(object):
         return flux, error
 
     def plot(self, *args, **kw):
+        """ Plot the spectrum.
+
+        Parameters
+        ----------
+        y : str
+            what to plot on the y axis, e.g., 'error'. Defaults to spec.y
+        ax : axes object
+            on which to plot, defaults to plt.gca()
+        draw : bool
+            whether to draw plot, default is True
+        wunit : str
+            units to convert x data to
+        ynuits : str
+            units to convert y data to
+        vref : float
+            velocity reference wavelength to plot x axis in velocity space
+        vunit : str
+            units to convert velocity to
+
+        Returns
+        -------
+        ln : matplotlib line object
+        """
         ykey = kw.pop('y', 'y')
         ax = kw.pop('ax', _pl.gca())
         draw = kw.pop('draw', True)
