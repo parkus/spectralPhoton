@@ -1943,50 +1943,53 @@ class Spectrum(object):
 
     @classmethod
     def read_x1d(cls, path, keep_extra_fields=False, keep_header=True):
-        h = _fits.open(path)
+        hs = _fits.open(path)
 
         std_names = ['wavelength', 'flux', 'error']
-        std_data = {}
-        other_data = {}
-        hdr = h[1].header
-        keys = hdr.keys()
-        keys = filter(lambda s: 'TTYPE' in s, keys)
-        for key in keys:
-            name = hdr[key].lower()
-            vec = h[1].data[name]
-            if vec.ndim < 2 or vec.shape[1] == 1:
-                continue
-            unit_key = key.replace('TYPE', 'UNIT')
-            units_str = hdr[unit_key] if unit_key in hdr else ''
-            if units_str == 'Angstroms':
-                units_str = 'Angstrom'
-            if units_str == 'Counts/s':
-                units_str = 'count s-1'
-            units = _u.Unit(units_str)
-            vec = vec * units
-            if name in std_names:
-                std_data[name] = vec
-            elif keep_extra_fields:
-                other_data[name] = vec
-
         ynames = ['f', 'flux']
-        meta = h[0].header + h[1].header if keep_header else None
-
+        meta = hs[0].header + hs[1].header if keep_header else None
         specs = []
-        for i in range(len(std_data['wavelength'])):
-            w, f, e = [std_data[s][i] for s in std_names]
-            wbins = utils.wave_edges(w.value) * w.unit
-            assert _np.allclose(utils.midpts(wbins.value), w.value)
-            if keep_extra_fields:
-                other_dict = {}
-                for key in other_data:
-                    other_dict[key] = other_data[key][i]
-            else:
-                other_dict = None
-            spec = Spectrum(None, f, e, wbins=wbins, meta=meta, other_data=other_dict, yname=ynames)
-            specs.append(spec)
+        for h in hs[1:]:
+            std_data = {}
+            other_data = {}
+            hdr = h.header
+            keys = hdr.keys()
+            keys = filter(lambda s: 'TTYPE' in s, keys)
+            for key in keys:
+                name = hdr[key].lower()
+                vec = h.data[name]
+                if vec.ndim < 2 or vec.shape[1] == 1:
+                    continue
+                unit_key = key.replace('TYPE', 'UNIT')
+                units_str = hdr[unit_key] if unit_key in hdr else ''
+                if units_str == 'Angstroms':
+                    units_str = 'Angstrom'
+                if units_str == 'Counts/s':
+                    units_str = 'count s-1'
+                units = _u.Unit(units_str)
+                vec = vec * units
+                if name in std_names:
+                    std_data[name] = vec
+                elif keep_extra_fields:
+                    other_data[name] = vec
 
-        return MultiSpectrum(specs)
+            for i in range(len(std_data['wavelength'])):
+                w, f, e = [std_data[s][i] for s in std_names]
+                wbins = utils.wave_edges(w.value) * w.unit
+                assert _np.allclose(utils.midpts(wbins.value), w.value)
+                if keep_extra_fields:
+                    other_dict = {}
+                    for key in other_data:
+                        other_dict[key] = other_data[key][i]
+                else:
+                    other_dict = None
+                spec = Spectrum(None, f, e, wbins=wbins, meta=meta, other_data=other_dict, yname=ynames)
+                specs.append(spec)
+
+        if len(specs) > 1:
+            return MultiSpectrum(specs)
+        else:
+            return specs[0]
 
 
     @classmethod
