@@ -1,4 +1,4 @@
-import data_structures
+from . import data_structures
 from astropy.io import fits as _fits
 import astropy.time as _time
 import astropy.units as _u
@@ -9,7 +9,8 @@ import numpy as _np
 import scipy.interpolate as _interp
 import os as _os
 import re as _re
-import utils as _utils
+from . import utils as _utils
+from functools import reduce
 
 
 # TODO: test with COS NUV data
@@ -56,13 +57,13 @@ def readtagset(directory_or_tagfiles, traceloc='stsci', fluxed='tag_vs_x1d', div
         return photons
 
     if any([('corrtag_b' in tf) for tf in tagfiles]):
-        file_pairs = zip(tagfiles, x1dfiles)
+        file_pairs = list(zip(tagfiles, x1dfiles))
         if a_or_b in ['a', 'b']:
-            filter_ab = lambda seg: filter(lambda g: 'corrtag_' + seg in g[0], file_pairs)
+            filter_ab = lambda seg: [g for g in file_pairs if 'corrtag_' + seg in g[0]]
             file_pairs = filter_ab(a_or_b)
-            return readfiles(*zip(*file_pairs))
+            return readfiles(*list(zip(*file_pairs)))
         elif a_or_b == 'both':
-            p = readfiles(*zip(*file_pairs))
+            p = readfiles(*list(zip(*file_pairs)))
             p.merge_like_observations()
             return p
         else:
@@ -171,8 +172,8 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
         if divvyit:
             if hdr['detector'] == 'NUV':
                 limits = [stsci_extraction_ranges(x1d, seg) for seg in ['A', 'B', 'C']]
-                ysignal, yback = zip(*limits)
-                map(photons.divvy, ysignal, yback)
+                ysignal, yback = list(zip(*limits))
+                list(map(photons.divvy, ysignal, yback))
             elif hdr['detector'] == 'FUV':
                 seg = hdr['segment']
                 ysignal, yback = stsci_extraction_ranges(x1d, seg)
@@ -219,7 +220,7 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
         # add effective area to photons
         if fluxit:
             Aeff = _np.zeros_like(photons['t'])
-            for x1d_row, order in zip(range(Norders), order_nos):
+            for x1d_row, order in zip(list(range(Norders)), order_nos):
                 Aeff_i = _get_Aeff_x1d(photons, x1d, x1d_row, order, method=fluxed, flux_bins=flux_bins)
                 Aeff[photons['o'] == order] = Aeff_i
 
@@ -340,7 +341,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     # convert everything to integers so we can make slices
     try:
         intrnd = lambda x: int(round(x))
-        traceloc, extrsize, bksize, bkoff = map(intrnd, [traceloc, extrsize, bksize, bkoff])
+        traceloc, extrsize, bksize, bkoff = list(map(intrnd, [traceloc, extrsize, bksize, bkoff]))
     except ValueError:
         raise ValueError("Invalid input for either traceloc, extrsize, bksize, "
                          "or bkoff. See docstring.")
@@ -431,7 +432,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
         cols = [_fits.Column(n, fm, u, array=d) for n, fm, u, d in
                 zip(colnames, fmts, units, dataset)]
         del meta['descriptions']
-        spechdr = _fits.Header(meta.items())
+        spechdr = _fits.Header(list(meta.items()))
         spechdu = _fits.BinTableHDU.from_columns(cols, header=spechdr,
                                                 name='spectrum')
 
@@ -501,7 +502,7 @@ def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
             # all "orders" (segments) of the NUV spectra fall on the same detector and are just offset in y,
             # I'll just duplicate the events for each spectrum
             segs = [s[-1] for s in xd['segment']]
-            orders = range(len(segs))
+            orders = list(range(len(segs)))
         else:
             seg = segment[-1]
             segs = [seg]
@@ -538,7 +539,7 @@ def _get_photon_info_COS(tag, x1d, traceloc='stsci'):
             else:
                 data_list.append(data + [xdisp, order_vec])
 
-    data = map(_np.hstack, zip(*data_list))
+    data = list(map(_np.hstack, list(zip(*data_list))))
 
     return data
 
@@ -559,7 +560,7 @@ def rectify_g140m(g140mtag):
 
     # identify iarglow by finding maxima of each row of pixels in x direction
     x_mx = _np.argmax(img, axis=0)
-    count_mx = img[x_mx,range(2048)]
+    count_mx = img[x_mx,list(range(2048))]
     ymids = (edges[:-1] + edges[1:])/2.0
 
     # when airglow is faint, a lot of hot pixels in the upper left of the detecotor throw this off. to prevent this,
@@ -819,12 +820,12 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
 
             ## make interpolation functions
             interp = lambda vec: _interp.interp1d(xpix, vec, bounds_error=False, fill_value=_np.nan)
-            extryinterp = map(interp, xd['extrlocy']*yfac)
-            waveinterp = map(interp, xd['wavelength'])
+            extryinterp = list(map(interp, xd['extrlocy']*yfac))
+            waveinterp = list(map(interp, xd['wavelength']))
             def make_dq_function(dq):
                 f = _interp.interp1d(xpix, dq, 'nearest', bounds_error=False, fill_value=_np.nan)
                 return lambda x: f(x).astype('uint16')
-            dqinterp = map(make_dq_function, xd['dq'])
+            dqinterp = list(map(make_dq_function, xd['dq']))
 
 
         if is_echelle:
@@ -875,7 +876,7 @@ def _get_photon_info_STIS(tag, x1d, traceloc='stsci'):
         data_list.append([time, wave, xdisp, order, dq])
 
     # unpack the data arrays and return them
-    time, wave, xdisp, order, dq = map(_np.hstack, zip(*data_list))
+    time, wave, xdisp, order, dq = list(map(_np.hstack, list(zip(*data_list))))
     return time, wave, xdisp, order, dq
 
 
@@ -899,7 +900,7 @@ def good_waverange(x1d, clipends=False, clipflags=None):
     if type(x1d) == str: x1d = _fits.open(x1d)
     xd = x1d[1].data
     wave = xd['wavelength']
-    edges = map(_utils.wave_edges, wave)
+    edges = list(map(_utils.wave_edges, wave))
     if clipends:
         if clipflags is None:
             clipflags = 2 + 128 + 256 if x1d[0].header['instrume'] == 'STIS' else 8 + 128 + 256
@@ -997,10 +998,10 @@ def _median_trace(x, y, Npix, binfac=1):
     # get the median y value and rough error in each x pixel
     bins = _np.arange(0,Npix+1, binfac)
     bin_no = _np.searchsorted(bins, x)
-    binned = [y[bin_no == i] for i in xrange(1, len(bins))]
-    meds = _np.array(map(_np.median, binned))
-    sig2 = _np.array(map(_np.var, binned))
-    Ns = _np.array(map(len, binned))
+    binned = [y[bin_no == i] for i in range(1, len(bins))]
+    meds = _np.array(list(map(_np.median, binned)))
+    sig2 = _np.array(list(map(_np.var, binned)))
+    Ns = _np.array(list(map(len, binned)))
     sig2[Ns <= 1] = _np.inf
     ws = Ns/sig2
 
@@ -1054,8 +1055,8 @@ def obs_files(directory):
 
     allfiles = _os.listdir(directory)
     allfiles = [_os.path.join(directory, name) for name in allfiles]
-    tagfiles = filter(lambda s: 'tag' in s, allfiles)
-    x1dfiles = filter(lambda s: 'x1d.fits' in s, allfiles)
+    tagfiles = [s for s in allfiles if 'tag' in s]
+    x1dfiles = [s for s in allfiles if 'x1d.fits' in s]
 
     # obervation identifiers
     obsids = _np.unique([_fits.getval(f, 'rootname') for f in tagfiles])
@@ -1063,13 +1064,13 @@ def obs_files(directory):
     tags, x1ds = [],[]
     for obsid in obsids:
         # look for tag file with matching obsid in filename
-        obs_tags = filter(lambda s: obsid in s, tagfiles)
+        obs_tags = [s for s in tagfiles if obsid in s]
         if len(obs_tags) == 0:
             raise ValueError('No tag files found for observation {}'.format(obsid))
         tags.extend(obs_tags)
 
         # look for x1d files with matching obsids
-        obs_x1ds = filter(lambda s: obsid in s, x1dfiles)
+        obs_x1ds = [s for s in x1dfiles if obsid in s]
         if len(obs_x1ds) == 0:
             raise ValueError('No x1d file found for observation {}'.format(obsid))
         if len(obs_x1ds) > 1:

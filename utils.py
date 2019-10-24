@@ -1,4 +1,5 @@
 import numpy as _np
+from functools import reduce
 
 
 class LowSNError(BaseException):
@@ -75,11 +76,11 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     bin_edges_ds, density_ds, error_ds
     """
 
-    bin_edges, density, error = map(_np.asarray, [bin_edges, density, error])
+    bin_edges, density, error = list(map(_np.asarray, [bin_edges, density, error]))
 
     # assume multiple spectra are present. if not reshape two have two dimensions
     if density.ndim == 1:
-        bin_edges, density, error = [_np.reshape(a, [1, None]) for a in bin_edges, density, error]
+        bin_edges, density, error = [_np.reshape(a, [1, None]) for a in (bin_edges, density, error)]
     else:
         assert len(density) == len(error)
         if bin_edges.ndim > 1:
@@ -146,7 +147,7 @@ def adaptive_downsample(bin_edges, density, error, min_SN):
     bin_edges_ds = _np.append(lo, hi[-1])
 
     # remove extra dimensions (i.e. if only a single spectrum was used)
-    density_ds, error_ds = map(_np.squeeze, [density_ds, error_ds])
+    density_ds, error_ds = list(map(_np.squeeze, [density_ds, error_ds]))
 
     return bin_edges_ds, density_ds, error_ds
 
@@ -208,7 +209,7 @@ def rangeset_intersect(ranges0, ranges1, presorted=False):
 
     if len(ranges0) == 0 or len(ranges1) == 0:
         return _np.empty([0, 2])
-    rng0, rng1 = map(_np.asarray, [ranges0, ranges1])
+    rng0, rng1 = list(map(_np.asarray, [ranges0, ranges1]))
 
     if not presorted:
         rng0, rng1 = [r[_np.argsort(r[:,0])] for r in [rng0, rng1]]
@@ -243,7 +244,7 @@ def rangeset_invert(ranges):
 
 
 def rangeset_union(ranges0, ranges1):
-    invrng0, invrng1 = map(rangeset_invert, [ranges0, ranges1])
+    invrng0, invrng1 = list(map(rangeset_invert, [ranges0, ranges1]))
     xinv = rangeset_intersect(invrng0, invrng1)
     return rangeset_invert(xinv)
 

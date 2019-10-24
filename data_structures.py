@@ -1,10 +1,11 @@
 import copy as _copy
 import numpy as _np
-import utils
+from . import utils
 from astropy import time as _time, table as _tbl, units as _u, constants as _const, table as _table
 from astropy.io import fits as _fits
-from crebin import rebin as _rebin
+from .crebin import rebin as _rebin
 from matplotlib import pyplot as plt, pyplot as _pl
+from functools import reduce
 
 
 def _FITSformat(dtype):
@@ -371,7 +372,7 @@ class Photons:
             if isinstance(meta, _fits.Header):
                 hdr = meta
             elif hasattr(meta, 'iteritems'):
-                hdr = _fits.Header(meta.iteritems())
+                hdr = _fits.Header(iter(meta.items()))
             else:
                 raise ValueError('FITS file cannot be constructed because Photons object has an improper list of '
                                  'observation metadata. The metadata items must either be pyFITS header objects or '
@@ -441,8 +442,8 @@ class Photons:
         obj.obs_metadata = [hdu.header for hdu in hdulist[2:]]
 
         # parse times and bands
-        pairs = map(parse_bands_and_time, hdulist[2:])
-        bands, times = zip(*pairs)
+        pairs = list(map(parse_bands_and_time, hdulist[2:]))
+        bands, times = list(zip(*pairs))
         obj.obs_times = times
         obj.obs_bandpasses = bands
 
@@ -868,9 +869,9 @@ class Photons:
 
         # get start and stop of all the time steps
         if hasattr(time_step, '__iter__'):
-            print 'I see that you gave user supplied time bins. That is fine, but note that no checks will be ' \
+            print('I see that you gave user supplied time bins. That is fine, but note that no checks will be ' \
                   'performed to ensure wavlength and time coverage in that range. And any time_range parameter will ' \
-                  'be ignored.'
+                  'be ignored.')
             starts, stops = _np.asarray(time_step).T
         else:
             time_edges, valid_time_bins = self._construct_time_bins(time_step, t_bin_method, time_range)
@@ -878,10 +879,10 @@ class Photons:
         time_midpts = (starts + stops)/2.0
 
         spectra = []
-        for time_range in bar(zip(starts, stops)):
+        for time_range in bar(list(zip(starts, stops))):
             kws['time_ranges'] = time_range
             spectra.append(self.spectrum(**kws))
-        bin_edges, bin_midpts, rates, errors = map(_np.array, zip(*spectra))
+        bin_edges, bin_midpts, rates, errors = list(map(_np.array, list(zip(*spectra))))
         rates[:,i_gaps] = _np.nan
         errors[:,i_gaps] = _np.nan
 
@@ -1154,7 +1155,7 @@ class Photons:
             return key
 
         key = key.lower()
-        if key in self._alternate_names.values():
+        if key in list(self._alternate_names.values()):
             return key
         elif key in self._alternate_names:
             return self._alternate_names[key]
@@ -1327,11 +1328,11 @@ class Photons:
 
             # add bins to the list
             edges.extend(obs_bins)
-            valid.extend(range(marker, marker+len(obs_bins)-1))
+            valid.extend(list(range(marker, marker+len(obs_bins)-1)))
             marker += len(obs_bins)
 
         edges = _np.array(edges)
-        valid = _np.array(valid, long)
+        valid = _np.array(valid, int)
         return edges, valid
 
 
@@ -1504,7 +1505,7 @@ def _smooth_sum(x, n):
     """
     m = len(x)
     result = _np.zeros(m - (n-1))
-    for i in xrange(n):
+    for i in range(n):
         result += x[i:(m-n+i+1)]
     return result
 
@@ -1653,7 +1654,7 @@ class Spectrum(object):
 
         refs = self.references + spec2.references
         meta = self.meta
-        for k,v in spec2.meta.items():
+        for k,v in list(spec2.meta.items()):
             meta[k] = v
 
         return Spectrum(None, flux, err=error, wbins=self.wbins,
@@ -1733,11 +1734,11 @@ class Spectrum(object):
         else:
             if type(other_data_bin_methods) is str:
                 methods = [other_data_bin_methods] * len(self.other_data)
-                methods = dict(zip(self.other_data.keys(), methods))
+                methods = dict(list(zip(list(self.other_data.keys()), methods)))
             else:
                 methods = other_data_bin_methods
             other_data_new = {}
-            for key, d in self.other_data.items():
+            for key, d in list(self.other_data.items()):
                 d = self.other_data[key]
                 method = methods[key]
                 other_data_new[key] = _rebin.rebin(nb, ob, d.value, method) * d.unit
@@ -1772,7 +1773,7 @@ class Spectrum(object):
             other_data = None
         else:
             other_data = {}
-            for key, a in self.other_data.items():
+            for key, a in list(self.other_data.items()):
                 other_data[key] = a[keep]
 
         if self.e is None:
@@ -1838,7 +1839,8 @@ class Spectrum(object):
         wbin = Spectrum._groom_integration_ranges(*args)
         try:
             wbin.to(self.w.unit)
-        except AttributeError, _u.UnitConversionError:
+        except AttributeError as xxx_todo_changeme:
+            _u.UnitConversionError = xxx_todo_changeme
             raise ValueError('Input must be astropy quantity with units '
                              'convertable to that of spectrum.')
         if _np.any(wbin < self.wbins[0]) or _np.any(wbin > self.wbins[-1]):
@@ -1923,7 +1925,7 @@ class Spectrum(object):
             data.append(self.e)
             names.append('err')
         if self.other_data is not None:
-            for key, val in self.other_data.items():
+            for key, val in list(self.other_data.items()):
                 data.append(val)
                 names.append(key)
         tbl = _table.Table(data=data, names=names)
@@ -1953,8 +1955,8 @@ class Spectrum(object):
             std_data = {}
             other_data = {}
             hdr = h.header
-            keys = hdr.keys()
-            keys = filter(lambda s: 'TTYPE' in s, keys)
+            keys = list(hdr.keys())
+            keys = [s for s in keys if 'TTYPE' in s]
             for key in keys:
                 name = hdr[key].lower()
                 vec = h.data[name]
@@ -1994,7 +1996,7 @@ class Spectrum(object):
 
     @classmethod
     def read_muscles(cls, path):
-        if isinstance(path, basestring):
+        if isinstance(path, str):
             path = _tbl.Table.read(path, hdu=1)
         if isinstance(path, _tbl.Table):
             w0, w1, f, e = [path[s].quantity for s in
@@ -2028,7 +2030,7 @@ class Spectrum(object):
                 _f = 10**(float(logf) + DF)
                 w.append(_w)
                 f.append(_f)
-        w, f = map(_np.asarray, (w, f))
+        w, f = list(map(_np.asarray, (w, f)))
         isort = _np.argsort(w)
         w, f = [a[isort] for a in (w, f)]
         dw = _np.diff(w)
@@ -2173,7 +2175,7 @@ class GappySpectrum(MultiSpectrum):
             for i in range(len(args[0])):
                 single_args = [val[i] for val in args]
                 single_kws = {}
-                for key, val in kws.items():
+                for key, val in list(kws.items()):
                     single_kws[key] = val[i]
                 spectra.append(Spectrum(*single_args, **single_kws))
             self.__dict__['spectra'] = spectra
@@ -2187,7 +2189,7 @@ class GappySpectrum(MultiSpectrum):
             raise ValueError('The spectra making up a GappySpectrum should '
                              'not overlap.')
 
-        self.__dict__['i_gaps'] = _np.cumsum(map(len, self.spectra))
+        self.__dict__['i_gaps'] = _np.cumsum(list(map(len, self.spectra)))
 
         self.__dict__['meta'] = kws.get('meta', {})
 
@@ -2292,7 +2294,7 @@ class GappySpectrum(MultiSpectrum):
         wranges = self.wranges
         wunit = wranges.unit
         newbin_list = [nb.to(wunit) for nb in newbin_list]
-        newbins2D_list = map(utils.bins_1D_to_2D, newbin_list)
+        newbins2D_list = list(map(utils.bins_1D_to_2D, newbin_list))
         newbins2D = _np.vstack(newbins2D_list).value * wunit
         if self.any_gap_overalp(newbins2D):
             if gap_handling == 'error':
@@ -2302,7 +2304,7 @@ class GappySpectrum(MultiSpectrum):
                                                      newbins2D.value)
                 newbins2D = newbins2D*wunit
                 newbins2D_list = utils.split_at_gaps(newbins2D)
-                newbin_list = map(utils.bins_2D_to_1D, newbins2D_list)
+                newbin_list = list(map(utils.bins_2D_to_1D, newbins2D_list))
             else:
                 raise ValueError('value for gap_handling not recognized')
 
