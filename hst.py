@@ -1,3 +1,5 @@
+from __future__ import division, print_function, absolute_import
+
 from . import data_structures
 from astropy.io import fits as _fits
 import astropy.time as _time
