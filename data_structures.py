@@ -9,7 +9,6 @@ from .crebin import rebin as _rebin
 from matplotlib import pyplot as plt, pyplot as _pl
 from functools import reduce
 
-
 def _FITSformat(dtype):
     dstr = str(dtype)
     dstr = dstr.replace('>', '')
@@ -836,9 +835,7 @@ class Photons:
         return bin_start, bin_stop, bin_midpt, rates, error
 
 
-    def spectrum_frames(self, bins, time_step, waveranges=None, time_range=None, w_bin_method='full',
-                        t_bin_method='full', fluxed=False,
-                        energy_units='erg', order=None, progress_bar=False):
+    def spectrum_frames(self, bins, time_step, **kws):
         """
 
         Parameters
@@ -850,6 +847,8 @@ class Photons:
         bin_method
         fluxed
         energy_units
+        order
+        progress_bar
 
         Returns
         -------
@@ -900,9 +899,12 @@ class Photons:
         tbins = _np.array([t0, t1]).T
         good = ~_np.isnan(f[0])
         wbins = _np.array([we[0,:-1][good], we[0,1:][good]]).T
+        dw = wbins[:,1] - wbins[:,0]
         polyfuncs = []
+
         for i in range(len(t)):
-            _, _, pf = utils.polyfit_binned(wbins, f[i,good], e[i,good], poly_order)
+            _, _, pf = utils.polyfit_binned(wbins, f[i,good]*dw, e[i,good]*dw,
+                                            poly_order)
             polyfuncs.append(pf)
 
         # tf, cf, lf for total flux, continuum flux, line flux
