@@ -1430,8 +1430,16 @@ class Photons:
                 zeros = (signal_counts == 0)
                 if any(zeros):
                     signal_counts[zeros] = 1.0
-                    bin_midpts = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-                    signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts[~zeros], signal_counts_weighted[~zeros])
+                    # if mostly zeros, just use median weight
+                    if _np.sum(zeros)/len(zeros) > 0.5:
+                        if len(weights) == 0 or _np.all(weights <= 0):
+                            all_weights = self._full_weights(fluxed, energy_units)
+                            signal_counts_weighted = _np.nanmedian(all_weights[all_weights > 0])
+                        else:
+                            signal_counts_weighted = _np.nanmedian(weights[weights > 0])
+                    else:
+                        bin_midpts = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+                        signal_counts_weighted[zeros] = _np.interp(bin_midpts[zeros], bin_midpts[~zeros], signal_counts_weighted[~zeros])
                 avg_weight = signal_counts_weighted/signal_counts
                 min_variance = avg_weight**2
                 replace = (counts <= 0) & (variances < min_variance)
