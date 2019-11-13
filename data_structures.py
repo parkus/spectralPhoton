@@ -854,6 +854,29 @@ class Photons:
         -------
         starts, stops, time_midpts, bin_edges, bin_midpts, rates, errors
         """
+        waveranges = kws.get('waveranges', None)
+        time_range = kws.get('time_range', None)
+        w_bin_method = kws.get('w_bin_method', 'full')
+        t_bin_method = kws.get('t_bin_method', 'full')
+        fluxed = kws.get('fluxed', False)
+        energy_units = kws.get('energy_units', 'erg')
+        order = kws.get('order', None)
+        progress_bar = kws.get('progress_bar', False)
+        slim = kws.get('slim', True)
+
+        # if using limited ranges, slim down the photon list accordingly to
+        # speed up runtime (can make a huge difference)
+        if slim and (waveranges is not None or time_range is not None):
+            keep = _np.ones(len(self), bool)
+            if waveranges is not None:
+                keep = keep & utils.inranges(self['w'], waveranges)
+            if time_range is not None:
+                keep = keep & utils.inranges(self['t'], time_range)
+            kws['slim'] = False
+            p = _copy.deepcopy(self)
+            p.photons = p.photons[keep]
+            return p.spectrum_frames(bins, time_step, **kws)
+
         if progress_bar:
             try:
                 from tqdm import tqdm as bar
