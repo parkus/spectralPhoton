@@ -891,11 +891,11 @@ class Photons:
 
     def continuum_subtracted_lightcurves(self, dt, dw, continuum_bands, lc_bands, poly_order, fluxed=False,
                                          energy_units='erg', time_range=None, w_bin_method='elastic',
-                                         t_bin_method='elastic'):
+                                         t_bin_method='elastic', progress_bar=False):
         kws = dict(fluxed=fluxed, energy_units=energy_units)
 
         t0, t1, t, we, w, f, e = self.spectrum_frames(dw, dt, waveranges=continuum_bands, w_bin_method=w_bin_method,
-                                                      t_bin_method=t_bin_method, time_range=time_range, **kws)
+                                                      t_bin_method=t_bin_method, time_range=time_range, progress_bar=progress_bar, **kws)
         tbins = _np.array([t0, t1]).T
         good = ~_np.isnan(f[0])
         wbins = _np.array([we[0,:-1][good], we[0,1:][good]]).T
@@ -922,7 +922,6 @@ class Photons:
             les.append(le)
 
         return t0, t1, t, lfs, les
-
 
 
     def average_rate(self, bands, timeranges=None, fluxed=False, energy_units='erg', order=None):
