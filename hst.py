@@ -322,10 +322,10 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
                              "specified for any of the keywords.")
 
     # get the ribbon values
-    if extrsize == 'stsci': extrsize = _np.mean(xd['extrsize'])
-    if bksize == 'stsci': bksize = _np.mean([xd['bk1size'], xd['bk2size']])
+    if extrsize == 'stsci': extrsize = int(_np.mean(xd['extrsize']))
+    if bksize == 'stsci': bksize = int(_np.mean([xd['bk1size'], xd['bk2size']]))
     if bkoff == 'stsci':
-        bkoff = _np.mean(_np.abs([xd['bk1offst'], xd['bk2offst']]))
+        bkoff = int(_np.mean(_np.abs([xd['bk1offst'], xd['bk2offst']])))
 
     # select the trace location
     if traceloc == 'max':
@@ -335,7 +335,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
         maxpixel = _np.nanargmax(sn)
         traceloc = _np.unravel_index(maxpixel, f.shape)[0]
     if traceloc == 'lya':
-        xmx = _np.nanmedian(_np.argmax(f, 1))
+        xmx = int(_np.nanmedian(_np.argmax(f, 1)))
         redsum = _np.nansum(f[:, xmx+4:xmx+14], 1)
         smoothsum = data_structures._smooth_sum(redsum, extrsize) / float(extrsize)
         traceloc = _np.argmax(smoothsum) + extrsize/2
@@ -401,7 +401,7 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     #region PUT INTO TABLE
     # make data columns
     colnames = ['w0', 'w1', 'w', 'flux', 'error', 'dq', 'exptime']
-    units = ['Angstrom'] * 3 + ['ergs/s/cm2/Angstrom'] * 2 + ['s']
+    units = ['Angstrom'] * 3 + ['erg/s/cm2/Angstrom'] * 2 + ['s']
     descriptions = ['left (short,blue) edge of the wavelength bin',
                     'right (long,red) edge of the wavelength bin',
                     'midpoint of the wavelength bin',
@@ -430,8 +430,15 @@ def x2dspec(x2dfile, traceloc='max', extrsize='stsci', bksize='stsci', bkoff='st
     #region PUT INTO FITS
     if fitsout is not None:
         # spectrum hdu
-        fmts = ['E'] * 5 + ['I', 'E']
-        cols = [_fits.Column(n, fm, u, array=d) for n, fm, u, d in
+        fmts = ['D'] * 5 + ['I', 'D']
+        name_map = {'w0':'WAVELENGTH0',
+                    'w1':'WAVELENGTH1',
+                    'w':'WAVELENGTH',
+                    'flux':'FLUX',
+                    'error':'ERROR',
+                    'dq':'DQ',
+                    'exptime':'EXPTIME'}
+        cols = [_fits.Column(name_map[n], fm, u, array=d) for n, fm, u, d in
                 zip(colnames, fmts, units, dataset)]
         del meta['descriptions']
         spechdr = _fits.Header(list(meta.items()))
@@ -734,8 +741,11 @@ def _get_Aeff_x1d(photons, x1d, x1d_row, order, method='x1d_only', flux_bins=Non
     w_bins = _utils.wave_edges(w)
 
     if method == 'x1d_only':
-        if flux_bins in [None, False, 'x1d']:
-            rebin=False
+        try:
+            _np.asarray(flux_bins)
+        except ValueError:
+            if flux_bins in [None, False, 'x1d']:
+                flux_bins = False
         Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins, x1d_net=cps)
     elif method == 'tag_vs_x1d':
         Aeff = _get_Aeff_compare(photons, w_bins, flux, error, order, rebin=flux_bins)
