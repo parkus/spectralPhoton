@@ -1,5 +1,7 @@
 from __future__ import division, print_function, absolute_import
 
+from warnings import warn
+
 import copy as _copy
 import numpy as _np
 from . import utils
@@ -1986,6 +1988,8 @@ class Spectrum(object):
         meta = hs[0].header + hs[1].header if keep_header else None
         specs = []
         for h in hs[1:]:
+            if h.size == 0:
+                continue
             std_data = {}
             other_data = {}
             hdr = h.header
@@ -2148,6 +2152,8 @@ class MultiSpectrum(object):
     """
 
     def __init__(self, spectra, meta={}):
+        # setting in dictionary here allows me to prohibit user from doing
+        # self.spectra = something stupid later
         self.__dict__['spectra'] = spectra
         self.__dict__['meta'] = meta
 
@@ -2166,6 +2172,16 @@ class MultiSpectrum(object):
             return call_all_specs
         else:
             return [getattr(spec, item) for spec in self.spectra]
+
+
+    def __add__(self, other):
+        try:
+            meta = {**self.meta, **other.meta}
+        except ValueError:
+            warn('Could not concatenate metadata while adding spectra.')
+            meta={}
+        specs = self.spectra + other.spectra
+        return MultiSpectrum(specs, meta)
 
 
     def __getitem__(self, item):
