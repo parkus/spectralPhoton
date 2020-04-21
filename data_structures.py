@@ -2189,7 +2189,7 @@ class MultiSpectrum(object):
 
 
     def __setattr__(self, key, value):
-        if key in 'spectra':
+        if key == 'spectra':
             raise ValueError('Can only set spectra attribute on '
                              'initialization.')
         if hasattr(value, '__iter__') and len(value) == len(self.spectra):
