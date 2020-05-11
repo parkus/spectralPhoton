@@ -175,10 +175,12 @@ def readtag(tagfile, x1dfile, traceloc='stsci', fluxed='tag_vs_x1d', divvied=Tru
             if hdr['detector'] == 'NUV':
                 limits = [stsci_extraction_ranges(x1d, seg) for seg in ['A', 'B', 'C']]
                 ysignal, yback = list(zip(*limits))
+                ysignal, yback = [_np.round(a, 2) for a in (ysignal, yback)] # otherwise sometimes I get errors from some values being 0.5 and others being 0.49999999...
                 list(map(photons.divvy, ysignal, yback))
             elif hdr['detector'] == 'FUV':
                 seg = hdr['segment']
                 ysignal, yback = stsci_extraction_ranges(x1d, seg)
+                ysignal, yback = [_np.round(a, 2) for a in (ysignal, yback)]
                 photons.divvy(ysignal, yback)
 
         # add effective area to photons
