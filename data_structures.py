@@ -1347,7 +1347,7 @@ class Photons:
             mid = (rng[0] + rng[1]) / 2.0
             n_exact = span/dt
             if bin_method == 'elastic':
-                n = _np.round(n_exact) if n_exact > 1 else 1
+                n = int(_np.round(n_exact)) if n_exact > 1 else 1
                 obs_bins = _np.linspace(rng[0], rng[1], n+1)
             else:
                 if bin_method == 'full':
