@@ -157,6 +157,11 @@ class Photons:
             return signal
         signal = get_signal()
 
+        # make sure these are lists so that you can delete from them
+        self.obs_times = list(self.obs_times)
+        self.obs_metadata = list(self.obs_metadata)
+        self.obs_bandpasses = list(self.obs_bandpasses)
+
         i = 0
         while i < len(self.obs_metadata):
             j = i + 1
@@ -207,7 +212,9 @@ class Photons:
                     self.obs_bandpasses[i] = utils.rangeset_union(self.obs_bandpasses[i], self.obs_bandpasses[j])
 
                     # remove observation j
-                    del self.obs_times[j], self.obs_metadata[j], self.obs_bandpasses[j]
+                    del self.obs_times[j]
+                    del self.obs_metadata[j]
+                    del self.obs_bandpasses[j]
                 else:
                     j += 1
             i += 1
