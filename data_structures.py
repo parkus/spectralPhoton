@@ -750,7 +750,7 @@ class Photons:
 
         # get length of each time bin and the bin start and stop
         dt = _np.diff(edges)
-        bin_start, bin_stop = edges[:-1], edges[1:]
+        bin_start, bin_stop = edges[:-1].copy(), edges[1:].copy()
 
         # get rid of the bins in between exposures
         if nan_between:
