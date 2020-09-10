@@ -2040,22 +2040,17 @@ class Spectrum(object):
 
 
     @classmethod
-    def read_muscles(cls, path, format='hlsp'):
-        """format can be 'hlsp' or 'in house' """
+    def read_muscles(cls, path, format=None):
+        """format keyword kept for back compatability"""
         if isinstance(path, str):
             path = _tbl.Table.read(path, hdu=1)
-        if isinstance(path, _tbl.Table):
-            if format == 'in house':
-                w0, w1, f, e = [path[s].quantity for s in
-                                ['w0', 'w1', 'flux', 'error']]
-            elif format == 'hlsp':
-                w0, w1, f, e = [path[s].quantity for s in
-                                ['WAVELENGTH0', 'WAVELENGTH1', 'FLUX', 'ERROR']]
-            else:
-                raise  ValueError("Format not recognized. Use 'hlsp' or 'in house'.")
-        else:
-            raise ValueError("Input not recognized.")
 
+        try:
+            w0, w1, f, e = [path[s].quantity for s in
+                                ['w0', 'w1', 'flux', 'error']]
+        except KeyError:
+            w0, w1, f, e = [path[s].quantity for s in
+                            ['WAVELENGTH0', 'WAVELENGTH1', 'FLUX', 'ERROR']]
 
         gaps = w0[1:] != w1[:-1]
         igaps, = _np.nonzero(gaps)
