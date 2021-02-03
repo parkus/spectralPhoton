@@ -1656,7 +1656,7 @@ class Spectrum(object):
     #region properties
     dw = property(lambda self: _np.diff(self.wbins))
     w = property(lambda self: utils.midpts(self.wbins))
-    integral = property(lambda self: _np.sum(self.dw * self.y).decompose())
+    integral = property(lambda self: _np.sum(self.dw * self.y))
     #endregion
 
     #region magic
