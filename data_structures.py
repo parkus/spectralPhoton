@@ -2042,9 +2042,10 @@ class Spectrum(object):
     @classmethod
     def read_muscles(cls, path, format=None):
         """format keyword kept for back compatability"""
-        if isinstance(path, str):
+        try:
             path = _tbl.Table.read(path, hdu=1)
-
+        except:
+            pass
         try:
             w0, w1, f, e = [path[s].quantity for s in
                                 ['w0', 'w1', 'flux', 'error']]
