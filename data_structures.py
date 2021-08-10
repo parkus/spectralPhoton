@@ -1171,6 +1171,12 @@ class Photons:
             t = t.to(_u.s)
         t = _time.TimeDelta(t.value, format='sec')
         return self.time_datum + t
+
+
+    def bandpass_overlap(self):
+        bands = self.obs_bandpasses
+        overlap = reduce(utils.rangeset_intersect, bands[1:], bands[0])
+        return overlap
     #endregion
 
 
