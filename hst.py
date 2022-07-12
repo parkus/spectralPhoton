@@ -645,7 +645,8 @@ def extract_g140m_custom(g140mtagfile, x2dfile=None, extrsize=22, bkoff=600, bks
 
     # if x2d file present, bin tags the same as x2d and compare to get fluxes
     if x2dfile is not None:
-        spec2 = x2dspec(x2dfile, traceloc='lya', extrsize=extrsize/2, bkoff=bkoff/2, bksize=bksize/2, bkmask=False)
+        spec2 = x2dspec(x2dfile, traceloc='lya', extrsize=int(extrsize/2), bkoff=int(bkoff/2), bksize=int(bksize/2),
+                        bkmask=False)
         good_pixels = _np.bitwise_and(spec2['dq'], 4) == 0
         beg, end = _np.nonzero(good_pixels)[0][[0,-1]]
         spec2 = spec2[beg:end+1]
@@ -673,7 +674,9 @@ def _get_Aeff_compare(photons, bin_edges, flux, error=None, order='all', rebin=2
     # get count rate spectrum using the x1d wavelength edges
     if x1d_net is None:
         use_edges = rebin if user_bin else bin_edges
-        cps_density, cps_error = photons.spectrum(use_edges, order=order)[2:4]
+        if order == 'all':
+            _order = None
+        cps_density, cps_error = photons.spectrum(use_edges, order=_order)[2:4]
     else:
         if adaptive_bin:
             raise NotImplementedError('Haven\'t made it so you can use adaptive binning with x1d only fluxing yet.')
